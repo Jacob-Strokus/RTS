@@ -172,6 +172,11 @@ namespace FrontierAges.Presentation {
                 TryIssueAttackFromSelection();
             }
 
+            // Shift + A : attack-move to cursor for selection
+            if (Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.A)) {
+                IssueAttackMoveFromSelection();
+            }
+
             // F5 save snapshot, F9 load (prototype convenience)
             if (Input.GetKeyDown(KeyCode.F5)) {
                 var snap = FrontierAges.Sim.SnapshotUtil.Capture(_sim); _lastSnapshotJson = JsonUtility.ToJson(snap);
@@ -207,6 +212,8 @@ namespace FrontierAges.Presentation {
                 }
             }
         }
+
+        private void IssueAttackMoveFromSelection(){ if(_selection==null || _selection.Selected.Count==0) return; var ray=Camera.main.ScreenPointToRay(Input.mousePosition); if(Physics.Raycast(ray,out var hit,500f)){ int tx = (int)(hit.point.x * SimConstants.PositionScale); int ty = (int)(hit.point.z * SimConstants.PositionScale); foreach(var id in _selection.Selected){ _queue.Enqueue( new FrontierAges.Sim.Command{ IssueTick=_sim.State.Tick, Type=FrontierAges.Sim.CommandType.AttackMove, EntityId=id, TargetX=tx, TargetY=ty}); } } }
 
         private void RebuildViews() {
             // Destroy existing spawned unit & building view objects (rudimentary: tag by components)
