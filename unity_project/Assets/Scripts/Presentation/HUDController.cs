@@ -45,8 +45,13 @@ namespace FrontierAges.Presentation {
                     int idx = FindUnitIndex(showId);
                     if (idx >= 0) {
                         ref var u = ref _sim.State.Units[idx];
-                        SelectionText.text = $"Unit {u.Id} HP {u.HP}";
-                    } else SelectionText.text = "Selection gone";
+                        string extra = "";
+                        if (u.CarryAmount > 0) extra = $" Carry {u.CarryAmount}";
+                        SelectionText.text = $"Unit {u.Id} HP {u.HP}{extra}";
+                    } else {
+                        // Could be building later; for now just gone
+                        SelectionText.text = "Selection gone";
+                    }
                 }
             }
         }

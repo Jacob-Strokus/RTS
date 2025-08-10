@@ -6,11 +6,18 @@ namespace FrontierAges.Presentation {
     public class SimBootstrap : MonoBehaviour {
         public int PreSpawnCount = 10;
         public GameObject UnitPrefab; // simple capsule prefab
+    public GameObject BuildingGhostPrefab; // simple cube for placement preview
         private Simulator _sim;
         private float _accum;
         private CommandQueue _queue;
         private System.Collections.Generic.List<int> _unitIds = new System.Collections.Generic.List<int>();
     private SelectionManager _selection;
+    private GameObject _ghost;
+    private bool _placingBuilding;
+    private Vector3 _ghostValidColor = new Color(0,1,0,0.4f);
+    private Vector3 _ghostInvalidColor = new Color(1,0,0,0.4f);
+    private bool _autoAssignWorkers = true;
+    private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
 
         void Awake() {
             _queue = new CommandQueue();
@@ -60,10 +67,15 @@ namespace FrontierAges.Presentation {
                 }
             }
 
-            // B key: spawn placeholder building (for production later)
+            // B key: toggle building placement mode
             if (Input.GetKeyDown(KeyCode.B)) {
-                _sim.SpawnBuilding(0, 0, 0, 0, 0);
+                _placingBuilding = !_placingBuilding;
+                if (_placingBuilding) {
+                    if (BuildingGhostPrefab) _ghost = Instantiate(BuildingGhostPrefab);
+                } else { if (_ghost) Destroy(_ghost); }
             }
+
+            if (_placingBuilding) UpdateBuildingPlacement();
 
             // T key: enqueue training (unit type 0) at first building if exists
             if (Input.GetKeyDown(KeyCode.T)) {
@@ -92,6 +104,12 @@ namespace FrontierAges.Presentation {
                     }
                 }
             }
+
+            // H key: toggle auto-assign workers
+            if (Input.GetKeyDown(KeyCode.H)) {
+                _autoAssignWorkers = !_autoAssignWorkers;
+                // could set a flag in simulator later; for now we assume simulator always on; toggling would require an exposed property
+            }
         }
 
         private int FindUnitIndex(int id) {
@@ -115,6 +133,30 @@ namespace FrontierAges.Presentation {
                 int ox = (col - cols/2) * spacing;
                 int oy = (row - cols/2) * spacing;
                 _queue.Enqueue(new Command { IssueTick = _sim.State.Tick, Type = CommandType.Move, EntityId = ids[i], TargetX = baseX + ox, TargetY = baseY + oy });
+            }
+        }
+
+        private void UpdateBuildingPlacement() {
+            var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out var hit, 500f)) {
+                Vector3 pos = hit.point;
+                // snap to whole units
+                pos.x = Mathf.Round(pos.x);
+                pos.z = Mathf.Round(pos.z);
+                if (_ghost) _ghost.transform.position = pos;
+                int worldX = (int)(pos.x * SimConstants.PositionScale);
+                int worldY = (int)(pos.z * SimConstants.PositionScale);
+                bool valid = _sim.CanPlaceBuildingRect(worldX, worldY, 2, 2); // placeholder 2x2 footprint
+                if (_ghost) {
+                    foreach (var r in _ghost.GetComponentsInChildren<Renderer>()) {
+                        r.material.color = valid ? new Color(0,1,0,0.4f) : new Color(1,0,0,0.4f);
+                    }
+                }
+                if (valid && Input.GetMouseButtonDown(0)) {
+                    _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, 2, 2, 0);
+                    _placingBuilding = false; if (_ghost) Destroy(_ghost);
+                }
+                if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
             }
         }
     }
