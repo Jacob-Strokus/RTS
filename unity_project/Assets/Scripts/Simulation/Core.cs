@@ -128,6 +128,7 @@ namespace FrontierAges.Sim {
 
         public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; }
 
+        public bool AutoAssignWorkersEnabled = true;
         public void Tick() {
             State.Tick++;
             ProcessCommands();
@@ -136,7 +137,7 @@ namespace FrontierAges.Sim {
             ProductionStep();
             CombatStep();
             GatherStep();
-            AutoAssignIdleWorkers();
+            if (AutoAssignWorkersEnabled) AutoAssignIdleWorkers();
             // Future: research, pathfinding, combat, economy, vision
         }
 

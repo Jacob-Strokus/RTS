@@ -6,15 +6,25 @@ namespace FrontierAges.Presentation {
     public class SimBootstrap : MonoBehaviour {
         public int PreSpawnCount = 10;
         public GameObject UnitPrefab; // simple capsule prefab
+    public GameObject BuildingGhostPrefab; // simple cube for placement preview
         private Simulator _sim;
-        private float _accum;
+    private float _accum;
         private CommandQueue _queue;
         private System.Collections.Generic.List<int> _unitIds = new System.Collections.Generic.List<int>();
     private SelectionManager _selection;
+    private GameObject _ghost;
+    private bool _placingBuilding;
+    private Vector3 _ghostValidColor = new Color(0,1,0,0.4f);
+    private Vector3 _ghostInvalidColor = new Color(1,0,0,0.4f);
+    private bool _autoAssignWorkers = true;
+    private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
 
+        private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
         void Awake() {
             _queue = new CommandQueue();
             _sim = new Simulator(_queue);
+            _autoAssignWorkers = PlayerPrefs.GetInt("fa_autoAssign",1)==1;
+            _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
             // Register provisional unit type 0 (worker placeholder)
             var typeId = _sim.RegisterUnitType(new FrontierAges.Sim.UnitTypeData {
                 MoveSpeedMilliPerSec = 2500,
@@ -50,7 +60,13 @@ namespace FrontierAges.Presentation {
             _accum += Time.deltaTime * 1000f; // ms
             while (_accum >= SimConstants.MsPerTick) {
                 _accum -= SimConstants.MsPerTick;
+                _tickSw.Restart();
                 _sim.Tick();
+                _tickSw.Stop();
+                // Store last duration (micro approx) and running avg (EWMA)
+                long micros = (long)(_tickSw.Elapsed.TotalMilliseconds * 1000.0);
+                _sim.State.LastTickDurationMsTimes1000 = micros;
+                _sim.State.AvgTickDurationMicro = (_sim.State.AvgTickDurationMicro==0) ? micros : ( (_sim.State.AvgTickDurationMicro*9 + micros)/10 );
             }
             // Right click: group move with simple square formation
             if (Input.GetMouseButtonDown(1)) {
@@ -60,10 +76,20 @@ namespace FrontierAges.Presentation {
                 }
             }
 
-            // B key: spawn placeholder building (for production later)
+            // B key: toggle building placement mode
             if (Input.GetKeyDown(KeyCode.B)) {
-                _sim.SpawnBuilding(0, 0, 0, 0, 0);
+                _placingBuilding = !_placingBuilding;
+                if (_placingBuilding) {
+                    if (BuildingGhostPrefab) _ghost = Instantiate(BuildingGhostPrefab);
+                } else { if (_ghost) Destroy(_ghost); }
             }
+
+            if (_placingBuilding) {
+                if (Input.GetKeyDown(KeyCode.Period)) { _placeBuildingIndex = (_placeBuildingIndex + 1) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
+                if (Input.GetKeyDown(KeyCode.Comma)) { _placeBuildingIndex = (_placeBuildingIndex - 1 + Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length)) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
+            }
+
+            if (_placingBuilding) UpdateBuildingPlacement();
 
             // T key: enqueue training (unit type 0) at first building if exists
             if (Input.GetKeyDown(KeyCode.T)) {
@@ -92,6 +118,13 @@ namespace FrontierAges.Presentation {
                     }
                 }
             }
+
+            // H key: toggle auto-assign workers
+            if (Input.GetKeyDown(KeyCode.H)) {
+                _autoAssignWorkers = !_autoAssignWorkers;
+                _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
+                PlayerPrefs.SetInt("fa_autoAssign", _autoAssignWorkers?1:0); PlayerPrefs.Save();
+            }
         }
 
         private int FindUnitIndex(int id) {
@@ -117,5 +150,50 @@ namespace FrontierAges.Presentation {
                 _queue.Enqueue(new Command { IssueTick = _sim.State.Tick, Type = CommandType.Move, EntityId = ids[i], TargetX = baseX + ox, TargetY = baseY + oy });
             }
         }
+
+        private void UpdateBuildingPlacement() {
+            var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out var hit, 500f)) {
+                Vector3 pos = hit.point;
+                // snap to whole units
+                pos.x = Mathf.Round(pos.x);
+                pos.z = Mathf.Round(pos.z);
+                if (_ghost) _ghost.transform.position = pos;
+                int worldX = (int)(pos.x * SimConstants.PositionScale);
+                int worldY = (int)(pos.z * SimConstants.PositionScale);
+                // TODO: look up building footprint from imported data (first building in registry if available)
+                int w=2,h=2; // fallback
+                if (FrontierAges.Sim.DataRegistry.Buildings.Length>0) {
+                    var bjson = FrontierAges.Sim.DataRegistry.Buildings[Mathf.Clamp(_placeBuildingIndex,0,FrontierAges.Sim.DataRegistry.Buildings.Length-1)];
+                    if (bjson.footprint!=null) { w=bjson.footprint.w; h=bjson.footprint.h; }
+                }
+                bool valid = _sim.CanPlaceBuildingRect(worldX, worldY, w, h);
+                if (_ghost) {
+                    foreach (var r in _ghost.GetComponentsInChildren<Renderer>()) {
+                        r.material.color = valid ? new Color(0,1,0,0.4f) : new Color(1,0,0,0.4f);
+                    }
+                }
+                if (valid && Input.GetMouseButtonDown(0)) {
+                    _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, w, h, 0);
+                    _placingBuilding = false; if (_ghost) Destroy(_ghost);
+                }
+                if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
+            }
+        }
+
+#if UNITY_EDITOR
+        void OnDrawGizmos() {
+            if (_placingBuilding) {
+                Gizmos.color = new Color(1,1,1,0.08f);
+                int size = 64; // draw partial grid near origin for prototype
+                for (int x=0; x<=size; x++) {
+                    Gizmos.DrawLine(new Vector3(x,0,0), new Vector3(x,0,size));
+                }
+                for (int y=0; y<=size; y++) {
+                    Gizmos.DrawLine(new Vector3(0,0,y), new Vector3(size,0,y));
+                }
+            }
+        }
+#endif
     }
 }

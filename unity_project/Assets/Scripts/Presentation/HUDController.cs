@@ -16,7 +16,7 @@ namespace FrontierAges.Presentation {
         void Update() {
             if (_sim == null) return;
             if (_sel == null) _sel = FindObjectOfType<SelectionManager>();
-            if (TickText) TickText.text = $"Tick: {_sim.State.Tick}";
+            if (TickText) TickText.text = $"Tick: {_sim.State.Tick} Avgμs:{_sim.State.AvgTickDurationMicro}";
             if (UnitCountText) UnitCountText.text = $"Units: {_sim.State.UnitCount}";
             if (_sim.State.BuildingCount > 0) {
                 var b = _sim.State.Buildings[0];
@@ -42,14 +42,24 @@ namespace FrontierAges.Presentation {
                 if (_sel.Selected.Count == 0) SelectionText.text = "No Selection";
                 else {
                     int showId = default; foreach (var id in _sel.Selected) { showId = id; break; }
-                    int idx = FindUnitIndex(showId);
-                    if (idx >= 0) {
-                        ref var u = ref _sim.State.Units[idx];
-                        SelectionText.text = $"Unit {u.Id} HP {u.HP}";
-                    } else SelectionText.text = "Selection gone";
+                    int uIdx = FindUnitIndex(showId);
+                    if (uIdx >= 0) {
+                        ref var u = ref _sim.State.Units[uIdx];
+                        string extra = u.CarryAmount>0? $" Carry {u.CarryAmount}" : "";
+                        SelectionText.text = $"Unit {u.Id} HP {u.HP}{extra}";
+                    } else {
+                        // check buildings
+                        int bIdx = FindBuildingIndex(showId);
+                        if (bIdx >= 0) {
+                            ref var b = ref _sim.State.Buildings[bIdx];
+                            string q = b.HasActiveQueue==1? $" Queue:{b.QueueUnitType} {b.QueueRemainingMs}ms" : " Idle";
+                            SelectionText.text = $"Building {b.Id}{q}";
+                        } else SelectionText.text = "Selection gone";
+                    }
                 }
             }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
+        private int FindBuildingIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.BuildingCount;i++) if (ws.Buildings[i].Id==id) return i; return -1; }
     }
 }
