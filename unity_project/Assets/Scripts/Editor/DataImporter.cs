@@ -16,6 +16,7 @@ namespace FrontierAges.EditorTools {
             LoadAttacks();
             LoadUnits();
             LoadBuildings();
+            LoadMapConfig();
             ValidateCrossRefs();
             Debug.Log($"Imported Data: Resources={DataRegistry.Resources.Length} Units={DataRegistry.Units.Length} Attacks={DataRegistry.Attacks.Length} Buildings={DataRegistry.Buildings.Length}");
         }
@@ -51,6 +52,9 @@ namespace FrontierAges.EditorTools {
             var wrapper = JsonUtility.FromJson<BuildingJsonList>(json);
             if (wrapper != null && wrapper.buildings != null) DataRegistry.Buildings = wrapper.buildings;
         }
+
+    [System.Serializable] private class MapConfig { public int width=128; public int height=128; }
+    private static void LoadMapConfig(){ string file = Path.Combine(DataPath, "map.json"); if(!File.Exists(file)) return; var json = File.ReadAllText(file); var cfg = JsonUtility.FromJson<MapConfig>(json); if(cfg!=null){ var sim = Object.FindObjectOfType<FrontierAges.Presentation.SimBootstrap>()?.GetSimulator(); if(sim!=null) sim.ConfigureMapSize(cfg.width, cfg.height); Debug.Log($"Map config loaded {cfg.width}x{cfg.height}"); } }
 
         private static void ValidateCrossRefs() {
             // Simple O(N*M) first; optimize later with hash sets

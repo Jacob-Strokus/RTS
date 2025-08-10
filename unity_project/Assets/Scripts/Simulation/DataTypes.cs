@@ -9,7 +9,8 @@ namespace FrontierAges.Sim {
     [System.Serializable] public class AttackJson { public string id; public float range; public int cooldownMs; public int damage; }
     [System.Serializable] public class AttackJsonList { public AttackJson[] attacks; }
 
-    [System.Serializable] public class BuildingJson { public string id; public int age; public int maxHP; public string[] train; public Footprint footprint; }
+    [System.Serializable] public class CostJson { public int food; public int wood; public int stone; public int metal; }
+    [System.Serializable] public class BuildingJson { public string id; public int age; public int maxHP; public string[] train; public Footprint footprint; public int buildTimeMs; public CostJson cost; public int providesPopulation; }
     [System.Serializable] public class Footprint { public int w; public int h; }
     [System.Serializable] public class BuildingJsonList { public BuildingJson[] buildings; }
 

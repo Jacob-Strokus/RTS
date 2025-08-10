@@ -6,13 +6,37 @@ namespace FrontierAges.Presentation {
     public class HUDController : MonoBehaviour {
         public Text TickText;
         public Text UnitCountText;
-    public Text ProductionText;
-    public Slider ProductionSlider;
+        public Text ProductionText;
+        public Slider ProductionSlider;
         public Text ResourceText;
         public Text SelectionText; // new: show first selected entity HP / queue
+        public Text AutoAssignText; // status of auto-assign workers
+        public Text AttackModeText; // indicator when pressing A (transient)
+        public Button SaveBtn;
+        public Button LoadBtn;
+        public Button RecBtn;
+        public Button StopRecBtn;
+        public Button PlayBtn;
+        public Text ReplayStateText; public Button SaveDiskBtn; public Button LoadDiskBtn;
+    public Text HashText; // new: shows last tick hash
+    public Text ResearchText; // new: shows current research progress faction 0
         private Simulator _sim;
         private SelectionManager _sel;
-        void Start() { _sim = FindObjectOfType<SimBootstrap>()?.GetSimulator(); }
+        private float _attackFlashTimer;
+        private SimBootstrap _boot;
+
+        void Start() {
+            _sim = FindObjectOfType<SimBootstrap>()?.GetSimulator();
+            _boot = FindObjectOfType<SimBootstrap>();
+            if (SaveBtn) SaveBtn.onClick.AddListener(() => _boot.UiSaveSnapshot());
+            if (LoadBtn) LoadBtn.onClick.AddListener(() => _boot.UiLoadSnapshot());
+            if (RecBtn) RecBtn.onClick.AddListener(() => _boot.UiStartRecording());
+            if (StopRecBtn) StopRecBtn.onClick.AddListener(() => _boot.UiStopRecording());
+            if (PlayBtn) PlayBtn.onClick.AddListener(() => _boot.UiPlayRecording());
+            if(SaveDiskBtn) SaveDiskBtn.onClick.AddListener(()=> _boot.UiSaveSnapshotToDisk());
+            if(LoadDiskBtn) LoadDiskBtn.onClick.AddListener(()=> _boot.UiLoadLatestSnapshotFromDisk());
+        }
+
         void Update() {
             if (_sim == null) return;
             if (_sel == null) _sel = FindObjectOfType<SelectionManager>();
@@ -38,9 +62,25 @@ namespace FrontierAges.Presentation {
                 var f = _sim.State.Factions[0];
                 ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal}";
             }
+            if (AutoAssignText) {
+                AutoAssignText.text = _sim.AutoAssignWorkersEnabled ? "AutoAssign: ON (H)" : "AutoAssign: OFF (H)";
+            }
             if (SelectionText && _sel != null) {
                 if (_sel.Selected.Count == 0) SelectionText.text = "No Selection";
                 else {
+                    // Multi selection summary
+                    if (_sel.Selected.Count > 1) {
+                        int units=0, buildings=0, workers=0; int activeQueues=0; int totalQueueRemaining=0; int totalQueueTotal=0;
+                        foreach (var id in _sel.Selected) {
+                            int ui = FindUnitIndex(id);
+                            if (ui>=0) { units++; ref var uu = ref _sim.State.Units[ui]; if ((_sim.State.UnitTypes[uu.TypeId].Flags & 1)!=0) workers++; continue; }
+                            int bi = FindBuildingIndex(id);
+                            if (bi>=0) { buildings++; ref var bb = ref _sim.State.Buildings[bi]; if (bb.HasActiveQueue==1){ activeQueues++; totalQueueRemaining += bb.QueueRemainingMs; totalQueueTotal += bb.QueueTotalMs; } }
+                        }
+                        string qInfo = activeQueues>0? $" Queues:{activeQueues} AvgProg:{(totalQueueTotal>0?(1f - (float)totalQueueRemaining/totalQueueTotal):0f):P0}" : "";
+                        SelectionText.text = $"Sel: {units}U ({workers}W) {buildings}B{qInfo}";
+                        return;
+                    }
                     int showId = default; foreach (var id in _sel.Selected) { showId = id; break; }
                     int uIdx = FindUnitIndex(showId);
                     if (uIdx >= 0) {
@@ -52,11 +92,27 @@ namespace FrontierAges.Presentation {
                         int bIdx = FindBuildingIndex(showId);
                         if (bIdx >= 0) {
                             ref var b = ref _sim.State.Buildings[bIdx];
-                            string q = b.HasActiveQueue==1? $" Queue:{b.QueueUnitType} {b.QueueRemainingMs}ms" : " Idle";
-                            SelectionText.text = $"Building {b.Id}{q}";
+                            if (b.IsUnderConstruction==1) {
+                                float prog = b.BuildTotalMs>0? 1f - (b.BuildRemainingMs/(float)b.BuildTotalMs):0f;
+                                SelectionText.text = $"Building {b.Id} Construct {(prog*100f):F0}%";
+                            } else {
+                                string q = b.HasActiveQueue==1? $" Queue:{b.QueueUnitType} {b.QueueRemainingMs}ms" : " Idle";
+                                SelectionText.text = $"Building {b.Id}{q}";
+                            }
                         } else SelectionText.text = "Selection gone";
                     }
                 }
+            }
+            if (AttackModeText) {
+                if (Input.GetKeyDown(KeyCode.A)) { _attackFlashTimer = 1.5f; }
+                if (_attackFlashTimer > 0) { _attackFlashTimer -= Time.deltaTime; AttackModeText.text = "ATTACK: Click target"; AttackModeText.enabled = true; }
+                else AttackModeText.enabled = false;
+            }
+            if (ReplayStateText && _sim!=null){ string s = _sim.IsRecording?"REC":(_sim.IsPlayback?"PLAY":""); ReplayStateText.text = s; ReplayStateText.enabled = s!=""; }
+            if (HashText){ HashText.text = $"Hash: {_sim.LastTickHash:X16}"; }
+            if (ResearchText){
+                int f=0; var ws=_sim.State; short tid = ws.FactionResearchTechId[f]; if(tid>=0){ int rem = ws.FactionResearchRemainingMs[f]; int total = ws.FactionResearchTotalMs[f]; float prog = total>0? 1f - (rem/(float)total):0f; ResearchText.text = $"Research T{tid} {(prog*100f):F0}%"; }
+                else ResearchText.text = "Research: -";
             }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
