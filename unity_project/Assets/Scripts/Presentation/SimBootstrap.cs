@@ -114,6 +114,32 @@ namespace FrontierAges.Presentation {
                 }
             }
 
+            // Shift+T enqueue multiple (stress multi-queue)
+            if (Input.GetKeyDown(KeyCode.Y)) {
+                if (_sim.State.BuildingCount > 0) { var bId=_sim.State.Buildings[0].Id; for(int i=0;i<3;i++) _sim.EnqueueTrain(bId,0,5000); }
+            }
+
+            // Set rally point at mouse with R (when holding LeftShift)
+            if (Input.GetKeyDown(KeyCode.P)) {
+                if (_sim.State.BuildingCount>0) {
+                    var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+                    if(Physics.Raycast(ray,out var hit,500f)){
+                        int wx = (int)(hit.point.x * SimConstants.PositionScale);
+                        int wy = (int)(hit.point.z * SimConstants.PositionScale);
+                        _sim.SetRallyPoint(_sim.State.Buildings[0].Id, wx, wy);
+                        Debug.Log($"Rally set {wx},{wy}");
+                    }
+                }
+            }
+            if (Input.GetKeyDown(KeyCode.O)) { if(_sim.State.BuildingCount>0){ _sim.ClearRallyPoint(_sim.State.Buildings[0].Id); Debug.Log("Rally cleared"); } }
+
+            // Cancel active production slot (C), cancel tail last (V)
+            if (Input.GetKeyDown(KeyCode.C)) { if(_sim.State.BuildingCount>0) _sim.CancelProduction(_sim.State.Buildings[0].Id,0); }
+            if (Input.GetKeyDown(KeyCode.V)) { if(_sim.State.BuildingCount>0) { // cancel last tail index
+                    // naive: attempt high index values until fail
+                    for(int qi=5; qi>=1; qi--){ if(_sim.CancelProduction(_sim.State.Buildings[0].Id, qi)) break; }
+                } }
+
             // G key: have selected workers gather nearest resource
             if (Input.GetKeyDown(KeyCode.G)) {
                 if (_selection != null && _selection.Selected.Count > 0) {
