@@ -51,6 +51,9 @@ namespace FrontierAges.Sim {
         public Faction[] Factions = new Faction[8];
         public ResourceNode[] ResourceNodes = new ResourceNode[256];
         public int ResourceNodeCount;
+    // Profiling accumulators (not deterministic-critical)
+    public long LastTickDurationMsTimes1000; // micro-ish (approx) using System.Diagnostics stopwatch outside core scope
+    public long AvgTickDurationMicro;
     }
 
     public struct Building {
@@ -133,6 +136,7 @@ namespace FrontierAges.Sim {
             ProductionStep();
             CombatStep();
             GatherStep();
+            AutoAssignIdleWorkers();
             // Future: research, pathfinding, combat, economy, vision
         }
 
@@ -283,6 +287,19 @@ namespace FrontierAges.Sim {
             return id;
         }
 
+        public bool CanPlaceBuildingRect(int originX, int originY, int wTiles, int hTiles) {
+            int gx0 = originX / TileSize; int gy0 = originY / TileSize;
+            for (int dx=0; dx<wTiles; dx++) for (int dy=0; dy<hTiles; dy++) {
+                int gx = gx0+dx; int gy = gy0+dy; if (gx<0||gy<0||gx>=GridSize||gy>=GridSize) return false; if (_grid[gx,gy]) return false; }
+            return true;
+        }
+        public int PlaceBuildingWithFootprint(short typeId, short factionId, int originX, int originY, int wTiles, int hTiles, int hp) {
+            if (!CanPlaceBuildingRect(originX, originY, wTiles, hTiles)) return -1;
+            int id = SpawnBuilding(typeId, factionId, originX, originY, hp);
+            int gx0 = originX/TileSize; int gy0=originY/TileSize; for(int dx=0;dx<wTiles;dx++) for(int dy=0;dy<hTiles;dy++){ int gx=gx0+dx; int gy=gy0+dy; if(gx>=0&&gy>=0&&gx<GridSize&&gy<GridSize) _grid[gx,gy]=true; }
+            return id;
+        }
+
         public void EnqueueTrain(int buildingId, short unitType, int trainTimeMs) {
             int idx = FindBuildingIndex(buildingId);
             if (idx < 0) return;
@@ -411,6 +428,22 @@ namespace FrontierAges.Sim {
             }
         }
 
+        private void AutoAssignIdleWorkers() {
+            // Simple heuristic: if worker has no order and not carrying, assign nearest resource node with remaining >0
+            for (int i=0;i<State.UnitCount;i++) {
+                ref var u = ref State.Units[i];
+                if (u.CurrentOrderType!=OrderType.None || u.ReturningWithCargo==1) continue;
+                var utd = State.UnitTypes[u.TypeId]; if ((utd.Flags & 1)==0) continue; // not a worker
+                // Find closest node
+                int best=-1; long bestD2=long.MaxValue;
+                for (int rn=0; rn<State.ResourceNodeCount; rn++) {
+                    ref var node = ref State.ResourceNodes[rn]; if (node.AmountRemaining<=0) continue; long dx=node.X-u.X; long dy=node.Y-u.Y; long d2=dx*dx+dy*dy; if (d2<bestD2){bestD2=d2; best=rn;} }
+                if (best>=0) {
+                    u.CurrentOrderType = OrderType.Gather; u.CurrentOrderEntity = State.ResourceNodes[best].Id;
+                }
+            }
+        }
+
     private void ComputePathForUnit(int unitId, int targetX, int targetY) {
             int sx, sy, tx, ty; GetUnitTile(unitId, out sx, out sy); tx = targetX/TileSize; ty = targetY/TileSize;
             var path = AStar(sx, sy, tx, ty);
@@ -499,16 +532,22 @@ namespace FrontierAges.Sim {
         public int tick;
         public UnitSnap[] units;
         public BuildingSnap[] buildings;
+        public FactionSnap[] factions;
+        public ResourceNodeSnap[] resourceNodes;
     }
     [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
     [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; }
+    [System.Serializable] public class FactionSnap { public int food; public int wood; public int stone; public int metal; }
+    [System.Serializable] public class ResourceNodeSnap { public int id; public short r; public int x; public int y; public int amt; }
 
     public static class SnapshotUtil {
         public static Snapshot Capture(WorldState ws) {
             var snap = new Snapshot {
                 tick = ws.Tick,
                 units = new UnitSnap[ws.UnitCount],
-                buildings = new BuildingSnap[ws.BuildingCount]
+                buildings = new BuildingSnap[ws.BuildingCount],
+                factions = new FactionSnap[ws.Factions.Length],
+                resourceNodes = new ResourceNodeSnap[ws.ResourceNodeCount]
             };
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
@@ -521,6 +560,8 @@ namespace FrontierAges.Sim {
                 ref var b = ref ws.Buildings[i];
                 snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue };
             }
+            for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; }
+            for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining }; }
             return snap;
         }
 
@@ -528,6 +569,7 @@ namespace FrontierAges.Sim {
             ws.Tick = snap.tick;
             ws.UnitCount = 0;
             ws.BuildingCount = 0;
+            ws.ResourceNodeCount = 0;
         if (snap.units != null) {
                 if (ws.Units.Length < snap.units.Length) ws.Units = new Unit[snap.units.Length];
                 foreach (var us in snap.units) {
@@ -539,6 +581,13 @@ namespace FrontierAges.Sim {
                 foreach (var bs in snap.buildings) {
             ws.Buildings[ws.BuildingCount++] = new Building { Id = bs.id, TypeId = bs.type, FactionId = bs.faction, X = bs.x, Y = bs.y, HP = bs.hp, QueueUnitType = (short)bs.queueUnitType, QueueRemainingMs = bs.queueRemaining, HasActiveQueue = bs.hasQueue, QueueTotalMs = bs.queueTotal };
                 }
+            }
+            if (snap.factions != null) {
+                for (int f=0; f<ws.Factions.Length && f<snap.factions.Length; f++) { var fs = snap.factions[f]; ws.Factions[f].Food=fs.food; ws.Factions[f].Wood=fs.wood; ws.Factions[f].Stone=fs.stone; ws.Factions[f].Metal=fs.metal; }
+            }
+            if (snap.resourceNodes != null) {
+                if (ws.ResourceNodes.Length < snap.resourceNodes.Length) ws.ResourceNodes = new ResourceNode[snap.resourceNodes.Length];
+                foreach (var rn in snap.resourceNodes) { ws.ResourceNodes[ws.ResourceNodeCount++] = new ResourceNode { Id=rn.id, ResourceType=rn.r, X=rn.x, Y=rn.y, AmountRemaining=rn.amt }; }
             }
         }
     }
