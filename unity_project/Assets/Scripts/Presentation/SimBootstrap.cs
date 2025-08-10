@@ -153,6 +153,10 @@ namespace FrontierAges.Presentation {
                 // Rebuild presentation objects (simple: destroy all, respawn new views)
                 RebuildViews();
             }
+
+            if (ReplayScrubSlider && _cachedReplay!=null && _cachedReplay.Count>0) {
+                if (Input.GetMouseButtonUp(0) && Time.time - _scrubLastChangeTime > ScrubDebounceSeconds) ApplyPendingScrub();
+            }
         }
 
         private void TryIssueAttackFromSelection() {
@@ -291,14 +295,26 @@ namespace FrontierAges.Presentation {
         private System.Collections.Generic.List<CommandData> _cachedReplay;
         public RectTransform SnapshotListContainer; public GameObject SnapshotListItemPrefab; // UI list
         private Snapshot _recordBaseline; // local cached baseline for scrub
-        public void OnReplayScrubChanged(float v){ if(!_sim.IsPlayback && _cachedReplay!=null && _cachedReplay.Count>0){ int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); } }
-        public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json").OrderByDescending(f=>f).Take(30); foreach(var f in files){ var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = Path.GetFileNameWithoutExtension(f); if(btn) btn.onClick.AddListener(()=> { var json=File.ReadAllText(f); var snap=JsonUtility.FromJson<Snapshot>(json); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }); } }
+        private float _scrubLastChangeTime;
+        public float ScrubDebounceSeconds = 0.15f;
+        public UnityEngine.UI.Text SnapshotMetaText;
+        public void OnReplayScrubChanged(float v){ _scrubLastChangeTime = Time.time; }
+        private void ApplyPendingScrub(){ if(!ReplayScrubSlider) return; float v = ReplayScrubSlider.value; int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); }
+        public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json").OrderByDescending(f=>f).Take(30); foreach(var f in files){ var json=File.ReadAllText(f); var snap=JsonUtility.FromJson<Snapshot>(json); var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = $"{Path.GetFileNameWithoutExtension(f)} U:{snap.unitCount} B:{snap.buildingCount}"; if(btn) btn.onClick.AddListener(()=> { SnapshotUtil.Apply(_sim,snap); RebuildViews(); if(SnapshotMetaText) SnapshotMetaText.text=$"Tick {snap.tick} Units {snap.unitCount} Buildings {snap.buildingCount}"; }); } }
         public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
-        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; SnapshotUtil.Apply(_sim.State, _recordBaseline); // reset to baseline
-            // Fast-forward by replaying commands up to target tick deterministically
-            foreach(var cmd in _cachedReplay){ if(cmd.IssueTick > relativeTick) break; switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; } }
-            // Optionally tick simulation to a consistent tick equal to baselineTick + relativeTick
-            int targetAbsTick = _recordBaseline.tick + relativeTick; while(_sim.State.Tick < targetAbsTick){ _sim.Tick(); }
+        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; SnapshotUtil.Apply(_sim.State, _recordBaseline); // baseline
+            // Batch commands grouped by IssueTick; advance simulation to each tick
+            int currentRelative = 0; int maxTick = relativeTick;
+            int i=0; while(i<_cachedReplay.Count && _cachedReplay[i].IssueTick <= maxTick){ int cmdTick = _cachedReplay[i].IssueTick; while(currentRelative < cmdTick){ _sim.Tick(); currentRelative++; }
+                // execute all commands at this tick
+                while(i<_cachedReplay.Count && _cachedReplay[i].IssueTick==cmdTick){ var cmd = _cachedReplay[i]; // missing entity guard
+                    if (cmd.Type == CommandType.Move || cmd.Type==CommandType.Attack || cmd.Type==CommandType.Gather){
+                        // For move/gather/attack we don't validate existence deeply (prototype); could add map later
+                        switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; }
+                    }
+                    i++; }
+            }
+            while(currentRelative < maxTick){ _sim.Tick(); currentRelative++; }
             RebuildViews();
         }
     }

@@ -550,7 +550,7 @@ namespace FrontierAges.Sim {
     private int _playbackIndex;
     private int _playbackStartTick;
     private int _recordStartTick;
-    private Snapshot _baselineSnapshot; // stored at StartRecording for scrub resets
+    private Snapshot _baselineSnapshot; // stored at StartRecording for scrub resets (immutable reference)
     public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _baselineSnapshot = SnapshotUtil.Capture(State); _recording = true; _playback = false; }
     public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
     public void StartPlayback(List<Command> cmds) { _recorded = cmds ?? new List<Command>(); _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
@@ -567,7 +567,7 @@ namespace FrontierAges.Sim {
         // Modify ProcessCommands entry point to log & playback injection
         private void ProcessCommandsWrapper() { InjectPlaybackCommands(); ProcessCommands(); }
 
-        private void RecordCommand(Command c) {
+    private void RecordCommand(Command c) {
             if (!_recording) return;
             // store relative tick offset in IssueTick for playback
             c.IssueTick = State.Tick - _recordStartTick;
@@ -600,6 +600,11 @@ namespace FrontierAges.Sim {
         public BuildingSnap[] buildings;
         public FactionSnap[] factions;
         public ResourceNodeSnap[] resourceNodes;
+        // Metadata (optional)
+        public string version;
+        public long savedUnix;
+        public int unitCount;
+        public int buildingCount;
     }
     [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
     [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; }
@@ -617,7 +622,11 @@ namespace FrontierAges.Sim {
                 units = new UnitSnap[ws.UnitCount],
                 buildings = new BuildingSnap[ws.BuildingCount],
                 factions = new FactionSnap[ws.Factions.Length],
-                resourceNodes = new ResourceNodeSnap[ws.ResourceNodeCount]
+                resourceNodes = new ResourceNodeSnap[ws.ResourceNodeCount],
+                version = "1",
+                savedUnix = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                unitCount = ws.UnitCount,
+                buildingCount = ws.BuildingCount
             };
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
