@@ -16,6 +16,7 @@ namespace FrontierAges.EditorTools {
             LoadAttacks();
             LoadUnits();
             LoadBuildings();
+            LoadTechs();
             LoadMapConfig();
             ValidateCrossRefs();
             Debug.Log($"Imported Data: Resources={DataRegistry.Resources.Length} Units={DataRegistry.Units.Length} Attacks={DataRegistry.Attacks.Length} Buildings={DataRegistry.Buildings.Length}");
@@ -51,6 +52,14 @@ namespace FrontierAges.EditorTools {
             var json = File.ReadAllText(file);
             var wrapper = JsonUtility.FromJson<BuildingJsonList>(json);
             if (wrapper != null && wrapper.buildings != null) DataRegistry.Buildings = wrapper.buildings;
+        }
+
+        private static void LoadTechs(){
+            string file = Path.Combine(DataPath, "techs.json");
+            if (!File.Exists(file)) { Debug.LogWarning("techs.json missing"); return; }
+            var json = File.ReadAllText(file);
+            var wrapper = JsonUtility.FromJson<TechJsonList>(json);
+            if (wrapper != null && wrapper.techs != null) DataRegistry.Techs = wrapper.techs;
         }
 
     [System.Serializable] private class MapConfig { public int width=128; public int height=128; }

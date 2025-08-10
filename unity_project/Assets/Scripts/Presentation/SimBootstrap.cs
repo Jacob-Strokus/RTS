@@ -162,9 +162,9 @@ namespace FrontierAges.Presentation {
                 if (Input.GetMouseButtonUp(0) && Time.time - _scrubLastChangeTime > ScrubDebounceSeconds) ApplyPendingScrub();
             }
 
-            // R key: start sample research tech 0 (improves worker gather rate)
+            // R key: start first available tech (index 0) if not researched; fallback no-op
             if (Input.GetKeyDown(KeyCode.R)) {
-                _sim.StartResearch(0, 0, 8000); // 8s research
+                _sim.StartResearch(0, 0);
             }
         }
 
