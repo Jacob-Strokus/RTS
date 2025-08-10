@@ -51,6 +51,7 @@ namespace FrontierAges.Sim {
         public Faction[] Factions = new Faction[8];
         public ResourceNode[] ResourceNodes = new ResourceNode[256];
         public int ResourceNodeCount;
+    public byte[,] Visibility; // fog-of-war tiles (1 visible, 0 unseen) prototype
     // Profiling accumulators (not deterministic-critical)
     public long LastTickDurationMsTimes1000; // micro-ish (approx) using System.Diagnostics stopwatch outside core scope
     public long AvgTickDurationMicro;
@@ -67,6 +68,8 @@ namespace FrontierAges.Sim {
         public int QueueRemainingMs; // time remaining
         public byte HasActiveQueue; // 0/1
         public int QueueTotalMs; // original total for progress UI
+    public short FootprintW;
+    public short FootprintH;
     }
 
     public struct Faction {
@@ -119,21 +122,23 @@ namespace FrontierAges.Sim {
         public WorldState State { get; private set; } = new WorldState();
         private readonly ICommandQueue _cmdQueue;
     private DeterministicRng _rng = new DeterministicRng(0xC0FFEEu);
-    private readonly Dictionary<int,List<QueuedOrder>> _orderQueues = new Dictionary<int,List<QueuedOrder>>();
-    private readonly Dictionary<int,List<(int x,int y)>> _paths = new Dictionary<int,List<(int x,int y)>>();
+    // Exposed as internal so SnapshotUtil & debug systems can read (prototype scope)
+    internal readonly Dictionary<int,List<QueuedOrder>> _orderQueues = new Dictionary<int,List<QueuedOrder>>();
+    internal readonly Dictionary<int,List<(int x,int y)>> _paths = new Dictionary<int,List<(int x,int y)>>();
     private readonly Dictionary<int,int> _unitIndex = new Dictionary<int,int>(); // id -> index
         private bool[,] _grid; // occupancy grid
         private const int GridSize = 128;
         private const int TileSize = SimConstants.PositionScale; // 1 world unit tiles
 
-        public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; }
+    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; }
 
         public bool AutoAssignWorkersEnabled = true;
         public void Tick() {
             State.Tick++;
-            ProcessCommands();
+            ProcessCommandsWrapper();
             ProcessUnitOrderQueues();
             MovementStep();
+            UpdateVision(); // fog-of-war skeleton
             ProductionStep();
             CombatStep();
             GatherStep();
@@ -298,6 +303,8 @@ namespace FrontierAges.Sim {
             if (!CanPlaceBuildingRect(originX, originY, wTiles, hTiles)) return -1;
             int id = SpawnBuilding(typeId, factionId, originX, originY, hp);
             int gx0 = originX/TileSize; int gy0=originY/TileSize; for(int dx=0;dx<wTiles;dx++) for(int dy=0;dy<hTiles;dy++){ int gx=gx0+dx; int gy=gy0+dy; if(gx>=0&&gy>=0&&gx<GridSize&&gy<GridSize) _grid[gx,gy]=true; }
+            // store footprint
+            int bIdx = FindBuildingIndex(id); if (bIdx>=0) { State.Buildings[bIdx].FootprintW = (short)wTiles; State.Buildings[bIdx].FootprintH = (short)hTiles; }
             return id;
         }
 
@@ -517,6 +524,37 @@ namespace FrontierAges.Sim {
         // Public helper APIs for gameplay layer
         public void IssueAttackCommand(int unitId, int targetUnitId) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = CommandType.Attack, EntityId = unitId, TargetX = targetUnitId }); }
         public void IssueGatherCommand(int unitId, int resourceNodeId) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = CommandType.Gather, EntityId = unitId, TargetX = resourceNodeId }); }
+        public bool TryGetPath(int unitId, List<(int x,int y)> buffer) { if (_paths.TryGetValue(unitId, out var p)) { buffer.Clear(); buffer.AddRange(p); return true; } return false; }
+
+        // Fog-of-war skeleton: mark tiles around each faction 0 unit as visible (simple diamond radius)
+        private void UpdateVision() {
+            // Clear visibility (single faction prototype)
+            var vis = State.Visibility; if (vis == null) return; for (int x=0;x<GridSize;x++) for (int y=0;y<GridSize;y++) vis[x,y]=0;
+            int radiusTiles = 6; // placeholder vision radius
+            for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=GridSize||gy>=GridSize) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
+        }
+
+        // Replay skeleton
+        private List<Command> _recorded = new List<Command>(4096);
+        private bool _recording;
+        private bool _playback;
+        private int _playbackIndex;
+        private int _playbackStartTick;
+        public void StartRecording() { _recorded.Clear(); _recording = true; _playback = false; }
+        public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
+        public void StartPlayback(List<Command> cmds) { _recorded = cmds; _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
+        public bool IsRecording => _recording; public bool IsPlayback => _playback;
+
+        // Inject playback commands each tick before processing live ones
+        private void InjectPlaybackCommands() {
+            if (!_playback) return; while (_playbackIndex < _recorded.Count) { var c = _recorded[_playbackIndex]; int relative = c.IssueTick; // use original tick delta
+                if (State.Tick - _playbackStartTick >= relative) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = c.Type, EntityId = c.EntityId, TargetX = c.TargetX, TargetY = c.TargetY }); _playbackIndex++; }
+                else break; }
+            if (_playbackIndex >= _recorded.Count) _playback = false; }
+
+        // Modify ProcessCommands entry point to log & playback injection
+        private void ProcessCommandsWrapper() { InjectPlaybackCommands(); ProcessCommands(); }
+        // Replace Tick to call wrapper (already edited earlier but ensure wrapper used)
     }
 
     // Simple deterministic RNG (xorshift32)
@@ -537,12 +575,16 @@ namespace FrontierAges.Sim {
         public ResourceNodeSnap[] resourceNodes;
     }
     [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
-    [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; }
+    [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; }
     [System.Serializable] public class FactionSnap { public int food; public int wood; public int stone; public int metal; }
     [System.Serializable] public class ResourceNodeSnap { public int id; public short r; public int x; public int y; public int amt; }
 
     public static class SnapshotUtil {
-        public static Snapshot Capture(WorldState ws) {
+        // Legacy capture without orders/paths (kept for compatibility)
+        public static Snapshot Capture(WorldState ws) => CaptureInternal(ws, null, null);
+        public static Snapshot Capture(Simulator sim) => CaptureInternal(sim.State, sim._orderQueues, sim._paths);
+
+        private static Snapshot CaptureInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths) {
             var snap = new Snapshot {
                 tick = ws.Tick,
                 units = new UnitSnap[ws.UnitCount],
@@ -553,34 +595,58 @@ namespace FrontierAges.Sim {
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
                 var us = new UnitSnap { id = u.Id, type = u.TypeId, faction = u.FactionId, x = u.X, y = u.Y, hp = u.HP, currentOrder = u.CurrentOrderType, currentOrderEntity = u.CurrentOrderEntity };
-                // Serialize queued orders (cap 8)
-                // Access to Simulator's private dictionaries not available here; skipping queued orders for now (future: inject)
+                if (orderQueues != null && orderQueues.TryGetValue(u.Id, out var q) && q.Count > 0) {
+                    int max = q.Count > 16 ? 16 : q.Count; // cap
+                    us.orderTypes = new int[max]; us.orderEnts = new int[max]; us.orderXs = new int[max]; us.orderYs = new int[max];
+                    for (int oi=0; oi<max; oi++) {
+                        var qo = q[oi]; us.orderTypes[oi] = (int)qo.Type; us.orderEnts[oi] = qo.TargetEntityId; us.orderXs[oi] = qo.TargetX; us.orderYs[oi] = qo.TargetY;
+                    }
+                }
+                if (paths != null && paths.TryGetValue(u.Id, out var path) && path.Count > 0) {
+                    int maxp = path.Count > 64 ? 64 : path.Count; // cap
+                    us.pathX = new int[maxp]; us.pathY = new int[maxp];
+                    for (int pi=0; pi<maxp; pi++) { var wp = path[pi]; us.pathX[pi] = wp.x; us.pathY[pi] = wp.y; }
+                }
                 snap.units[i] = us;
             }
             for (int i = 0; i < ws.BuildingCount; i++) {
                 ref var b = ref ws.Buildings[i];
-                snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue };
+                snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue, fw = b.FootprintW, fh = b.FootprintH };
             }
             for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; }
             for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining }; }
             return snap;
         }
 
-        public static void Apply(WorldState ws, Snapshot snap) {
+        // Legacy apply (without orders). Prefer Apply(sim,...)
+        public static void Apply(WorldState ws, Snapshot snap) => ApplyInternal(ws, null, null, snap);
+        public static void Apply(Simulator sim, Snapshot snap) => ApplyInternal(sim.State, sim._orderQueues, sim._paths, snap);
+
+        private static void ApplyInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths, Snapshot snap) {
             ws.Tick = snap.tick;
-            ws.UnitCount = 0;
-            ws.BuildingCount = 0;
-            ws.ResourceNodeCount = 0;
-        if (snap.units != null) {
+            ws.UnitCount = 0; ws.BuildingCount = 0; ws.ResourceNodeCount = 0;
+            // Clear existing queues/paths
+            orderQueues?.Clear(); paths?.Clear();
+            if (snap.units != null) {
                 if (ws.Units.Length < snap.units.Length) ws.Units = new Unit[snap.units.Length];
                 foreach (var us in snap.units) {
-            ws.Units[ws.UnitCount++] = new Unit { Id = us.id, TypeId = us.type, FactionId = us.faction, X = us.x, Y = us.y, HP = us.hp, CurrentOrderType = us.currentOrder, CurrentOrderEntity = us.currentOrderEntity };
+                    ws.Units[ws.UnitCount++] = new Unit { Id = us.id, TypeId = us.type, FactionId = us.faction, X = us.x, Y = us.y, HP = us.hp, CurrentOrderType = us.currentOrder, CurrentOrderEntity = us.currentOrderEntity };
+                    if (orderQueues != null && us.orderTypes != null) {
+                        var list = new List<QueuedOrder>(us.orderTypes.Length);
+                        for (int i=0;i<us.orderTypes.Length;i++) list.Add(new QueuedOrder { Type = (OrderType)us.orderTypes[i], TargetEntityId = us.orderEnts?[i] ?? 0, TargetX = us.orderXs?[i] ?? 0, TargetY = us.orderYs?[i] ?? 0 });
+                        orderQueues[us.id] = list;
+                    }
+                    if (paths != null && us.pathX != null) {
+                        var plist = new List<(int x,int y)>(us.pathX.Length);
+                        for (int i=0;i<us.pathX.Length;i++) plist.Add((us.pathX[i], us.pathY[i]));
+                        paths[us.id] = plist;
+                    }
                 }
             }
             if (snap.buildings != null) {
                 if (ws.Buildings.Length < snap.buildings.Length) ws.Buildings = new Building[snap.buildings.Length];
                 foreach (var bs in snap.buildings) {
-            ws.Buildings[ws.BuildingCount++] = new Building { Id = bs.id, TypeId = bs.type, FactionId = bs.faction, X = bs.x, Y = bs.y, HP = bs.hp, QueueUnitType = (short)bs.queueUnitType, QueueRemainingMs = bs.queueRemaining, HasActiveQueue = bs.hasQueue, QueueTotalMs = bs.queueTotal };
+                    ws.Buildings[ws.BuildingCount++] = new Building { Id = bs.id, TypeId = bs.type, FactionId = bs.faction, X = bs.x, Y = bs.y, HP = bs.hp, QueueUnitType = (short)bs.queueUnitType, QueueRemainingMs = bs.queueRemaining, HasActiveQueue = bs.hasQueue, QueueTotalMs = bs.queueTotal, FootprintW = bs.fw, FootprintH = bs.fh };
                 }
             }
             if (snap.factions != null) {

@@ -7,6 +7,7 @@ namespace FrontierAges.Presentation {
         public int PreSpawnCount = 10;
         public GameObject UnitPrefab; // simple capsule prefab
     public GameObject BuildingGhostPrefab; // simple cube for placement preview
+    public GameObject BuildingViewPrefab; // visual prefab for placed building (optional)
         private Simulator _sim;
     private float _accum;
         private CommandQueue _queue;
@@ -20,7 +21,9 @@ namespace FrontierAges.Presentation {
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
 
         private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
-        void Awake() {
+        private int _lastPlacedBuildingIndexPersisted;
+    private string _lastSnapshotJson; // in-memory snapshot store (prototype)
+         void Awake() {
             _queue = new CommandQueue();
             _sim = new Simulator(_queue);
             _autoAssignWorkers = PlayerPrefs.GetInt("fa_autoAssign",1)==1;
@@ -51,6 +54,8 @@ namespace FrontierAges.Presentation {
             for (int r=0; r<4; r++) {
                 _sim.SpawnResourceNode(1, r*4000 + 3000, 5000, 50); // spaced line
             }
+            _placeBuildingIndex = PlayerPrefs.GetInt("fa_lastBuildingIndex", 0);
+            _lastPlacedBuildingIndexPersisted = _placeBuildingIndex;
         }
 
     public Simulator GetSimulator() => _sim;
@@ -87,6 +92,7 @@ namespace FrontierAges.Presentation {
             if (_placingBuilding) {
                 if (Input.GetKeyDown(KeyCode.Period)) { _placeBuildingIndex = (_placeBuildingIndex + 1) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
                 if (Input.GetKeyDown(KeyCode.Comma)) { _placeBuildingIndex = (_placeBuildingIndex - 1 + Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length)) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
+                if (_placeBuildingIndex != _lastPlacedBuildingIndexPersisted) { PlayerPrefs.SetInt("fa_lastBuildingIndex", _placeBuildingIndex); PlayerPrefs.Save(); _lastPlacedBuildingIndexPersisted = _placeBuildingIndex; }
             }
 
             if (_placingBuilding) UpdateBuildingPlacement();
@@ -124,6 +130,61 @@ namespace FrontierAges.Presentation {
                 _autoAssignWorkers = !_autoAssignWorkers;
                 _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
                 PlayerPrefs.SetInt("fa_autoAssign", _autoAssignWorkers?1:0); PlayerPrefs.Save();
+            }
+
+            // A key: if one unit selected and another unit under cursor, issue attack
+            if (Input.GetKeyDown(KeyCode.A)) {
+                TryIssueAttackFromSelection();
+            }
+
+            // F5 save snapshot, F9 load (prototype convenience)
+            if (Input.GetKeyDown(KeyCode.F5)) {
+                var snap = FrontierAges.Sim.SnapshotUtil.Capture(_sim); _lastSnapshotJson = JsonUtility.ToJson(snap);
+                Debug.Log($"Snapshot saved (len={_lastSnapshotJson?.Length})");
+            }
+            if (Input.GetKeyDown(KeyCode.F9) && !string.IsNullOrEmpty(_lastSnapshotJson)) {
+                var snap = JsonUtility.FromJson<FrontierAges.Sim.Snapshot>(_lastSnapshotJson); FrontierAges.Sim.SnapshotUtil.Apply(_sim, snap);
+                Debug.Log("Snapshot loaded");
+                // Rebuild presentation objects (simple: destroy all, respawn new views)
+                RebuildViews();
+            }
+        }
+
+        private void TryIssueAttackFromSelection() {
+            if (_selection == null) return; if (_selection.Selected.Count == 0) return;
+            // pick first selected as attacker
+            int attackerId = -1; foreach (var id in _selection.Selected) { attackerId = id; break; }
+            if (attackerId < 0) return;
+            var ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            if (Physics.Raycast(ray, out var hit, 500f)) {
+                var maybeTarget = hit.collider.GetComponent<UnitView>();
+                if (maybeTarget && maybeTarget.EntityId != attackerId) {
+                    _sim.IssueAttackCommand(attackerId, maybeTarget.EntityId);
+                }
+            }
+        }
+
+        private void RebuildViews() {
+            // Destroy existing spawned unit & building view objects (rudimentary: tag by components)
+            foreach (var uv in FindObjectsOfType<UnitView>()) Destroy(uv.gameObject);
+            foreach (var bv in FindObjectsOfType<BuildingView>()) Destroy(bv.gameObject);
+            // Respawn units
+            var ws = _sim.State;
+            for (int i=0;i<ws.UnitCount;i++) {
+                ref var u = ref ws.Units[i];
+                if (UnitPrefab) {
+                    var obj = Instantiate(UnitPrefab, new Vector3(u.X/(float)SimConstants.PositionScale,0,u.Y/(float)SimConstants.PositionScale), Quaternion.identity);
+                    var view = obj.GetComponent<UnitView>(); if (!view) view = obj.AddComponent<UnitView>(); view.Init(u.Id,_sim);
+                }
+            }
+            for (int b=0;b<ws.BuildingCount;b++) {
+                ref var bd = ref ws.Buildings[b];
+                if (BuildingViewPrefab) {
+                    var obj = Instantiate(BuildingViewPrefab);
+                    var bv = obj.GetComponent<BuildingView>(); if (!bv) bv = obj.AddComponent<BuildingView>();
+                    int w = bd.FootprintW>0? bd.FootprintW:2; int h = bd.FootprintH>0? bd.FootprintH:2;
+                    bv.Init(bd.Id, _sim, w, h);
+                }
             }
         }
 
@@ -176,6 +237,14 @@ namespace FrontierAges.Presentation {
                 if (valid && Input.GetMouseButtonDown(0)) {
                     _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, w, h, 0);
                     _placingBuilding = false; if (_ghost) Destroy(_ghost);
+                    // Instantiate view at placed location
+                    if (BuildingViewPrefab) {
+                        var viewGo = Instantiate(BuildingViewPrefab);
+                        var bv = viewGo.GetComponent<BuildingView>(); if (!bv) bv = viewGo.AddComponent<BuildingView>();
+                        // We'll need building id: last building added is at index BuildingCount-1
+                        int bid = _sim.State.Buildings[_sim.State.BuildingCount-1].Id;
+                        bv.Init(bid, _sim, w, h);
+                    }
                 }
                 if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
             }
@@ -191,6 +260,20 @@ namespace FrontierAges.Presentation {
                 }
                 for (int y=0; y<=size; y++) {
                     Gizmos.DrawLine(new Vector3(0,0,y), new Vector3(size,0,y));
+                }
+            }
+            // Outline selected building footprint using same ghost color (green) if any building selected
+            if (_selection == null) _selection = FindObjectOfType<SelectionManager>();
+            if (_selection != null && _sim!=null) {
+                foreach (var id in _selection.Selected) {
+                    int bIdx=-1; for (int i=0;i<_sim.State.BuildingCount;i++) if (_sim.State.Buildings[i].Id==id) { bIdx=i; break; }
+                    if (bIdx<0) continue;
+                    ref var b = ref _sim.State.Buildings[bIdx];
+                    int w=2,h=2; if (FrontierAges.Sim.DataRegistry.Buildings.Length>b.TypeId) { var bj=FrontierAges.Sim.DataRegistry.Buildings[b.TypeId]; if (bj.footprint!=null){ w=bj.footprint.w; h=bj.footprint.h; } }
+                    float baseX = b.X/(float)SimConstants.PositionScale; float baseZ=b.Y/(float)SimConstants.PositionScale;
+                    Vector3 p0=new Vector3(baseX,0.05f,baseZ); Vector3 p1=p0+new Vector3(w,0,0); Vector3 p2=p0+new Vector3(w,0,h); Vector3 p3=p0+new Vector3(0,0,h);
+                    Gizmos.color = new Color(0,1,0,0.35f);
+                    Gizmos.DrawLine(p0,p1); Gizmos.DrawLine(p1,p2); Gizmos.DrawLine(p2,p3); Gizmos.DrawLine(p3,p0);
                 }
             }
         }

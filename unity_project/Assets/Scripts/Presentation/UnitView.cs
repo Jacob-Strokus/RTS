@@ -7,9 +7,17 @@ namespace FrontierAges.Presentation {
         private Simulator _sim;
         private int _lastKnownTick;
 
+        private float _lastHp;
+        private float _hitFlash;
+        private Renderer _rend;
+        public GameObject HealthBarPrefab; // assign optional prefab with child Image fill
+        private UnityEngine.UI.Image _hpFill;
+
         public void Init(int entityId, Simulator sim) {
             EntityId = entityId; _sim = sim; _lastKnownTick = -1;
         }
+
+        void Start() { _rend = GetComponentInChildren<Renderer>(); }
 
         void Update() {
             if (_sim == null) return;
@@ -20,11 +28,23 @@ namespace FrontierAges.Presentation {
             if (idx < 0) return; // entity gone
             ref var u = ref state.Units[idx];
             transform.position = new Vector3(u.X / (float)SimConstants.PositionScale, 0, u.Y / (float)SimConstants.PositionScale);
+
+            if (_sim != null) {
+                var ws = _sim.State; int idx = FindUnitIndex(EntityId, ws); if (idx>=0) { ref var u = ref ws.Units[idx];
+                    if (_hpFill) _hpFill.fillAmount = Mathf.Clamp01(u.HP / (float)ws.UnitTypes[u.TypeId].MaxHP);
+                    if (_lastHp > 0 && u.HP < _lastHp) { _hitFlash = 0.25f; }
+                    _lastHp = u.HP;
+                }
+            }
+            if (_hitFlash > 0 && _rend) { _hitFlash -= Time.deltaTime; float t = _hitFlash / 0.25f; _rend.material.color = Color.Lerp(Color.white, Color.red, t); }
         }
 
         private int FindUnitIndex(int id, WorldState ws) {
             for (int i = 0; i < ws.UnitCount; i++) if (ws.Units[i].Id == id) return i; return -1;
         }
+
+        public void AttachHealthBar(Canvas worldCanvas, GameObject prefab) {
+            if (!prefab || !worldCanvas) return; var inst = GameObject.Instantiate(prefab, worldCanvas.transform); inst.transform.SetParent(worldCanvas.transform); inst.GetComponent<RectTransform>().sizeDelta = new Vector2(40,4); _hpFill = inst.GetComponentInChildren<UnityEngine.UI.Image>(); var follow = inst.AddComponent<WorldSpaceBillboard>(); follow.Target = this.transform; }
 
 #if UNITY_EDITOR
         void OnDrawGizmosSelected() {

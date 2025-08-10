@@ -6,13 +6,20 @@ namespace FrontierAges.Presentation {
     public class HUDController : MonoBehaviour {
         public Text TickText;
         public Text UnitCountText;
-    public Text ProductionText;
-    public Slider ProductionSlider;
+        public Text ProductionText;
+        public Slider ProductionSlider;
         public Text ResourceText;
         public Text SelectionText; // new: show first selected entity HP / queue
+        public Text AutoAssignText; // status of auto-assign workers
+        public Text AttackModeText; // indicator when pressing A (transient)
         private Simulator _sim;
         private SelectionManager _sel;
-        void Start() { _sim = FindObjectOfType<SimBootstrap>()?.GetSimulator(); }
+        private float _attackFlashTimer;
+
+        void Start() {
+            _sim = FindObjectOfType<SimBootstrap>()?.GetSimulator();
+        }
+
         void Update() {
             if (_sim == null) return;
             if (_sel == null) _sel = FindObjectOfType<SelectionManager>();
@@ -38,9 +45,25 @@ namespace FrontierAges.Presentation {
                 var f = _sim.State.Factions[0];
                 ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal}";
             }
+            if (AutoAssignText) {
+                AutoAssignText.text = _sim.AutoAssignWorkersEnabled ? "AutoAssign: ON (H)" : "AutoAssign: OFF (H)";
+            }
             if (SelectionText && _sel != null) {
                 if (_sel.Selected.Count == 0) SelectionText.text = "No Selection";
                 else {
+                    // Multi selection summary
+                    if (_sel.Selected.Count > 1) {
+                        int units=0, buildings=0, workers=0; int activeQueues=0; int totalQueueRemaining=0; int totalQueueTotal=0;
+                        foreach (var id in _sel.Selected) {
+                            int ui = FindUnitIndex(id);
+                            if (ui>=0) { units++; ref var uu = ref _sim.State.Units[ui]; if ((_sim.State.UnitTypes[uu.TypeId].Flags & 1)!=0) workers++; continue; }
+                            int bi = FindBuildingIndex(id);
+                            if (bi>=0) { buildings++; ref var bb = ref _sim.State.Buildings[bi]; if (bb.HasActiveQueue==1){ activeQueues++; totalQueueRemaining += bb.QueueRemainingMs; totalQueueTotal += bb.QueueTotalMs; } }
+                        }
+                        string qInfo = activeQueues>0? $" Queues:{activeQueues} AvgProg:{(totalQueueTotal>0?(1f - (float)totalQueueRemaining/totalQueueTotal):0f):P0}" : "";
+                        SelectionText.text = $"Sel: {units}U ({workers}W) {buildings}B{qInfo}";
+                        return;
+                    }
                     int showId = default; foreach (var id in _sel.Selected) { showId = id; break; }
                     int uIdx = FindUnitIndex(showId);
                     if (uIdx >= 0) {
@@ -57,6 +80,11 @@ namespace FrontierAges.Presentation {
                         } else SelectionText.text = "Selection gone";
                     }
                 }
+            }
+            if (AttackModeText) {
+                if (Input.GetKeyDown(KeyCode.A)) { _attackFlashTimer = 1.5f; }
+                if (_attackFlashTimer > 0) { _attackFlashTimer -= Time.deltaTime; AttackModeText.text = "ATTACK: Click target"; AttackModeText.enabled = true; }
+                else AttackModeText.enabled = false;
             }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
