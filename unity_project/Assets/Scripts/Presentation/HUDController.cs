@@ -17,6 +17,7 @@ namespace FrontierAges.Presentation {
         public Button RecBtn;
         public Button StopRecBtn;
         public Button PlayBtn;
+        public Text ReplayStateText; public Button SaveDiskBtn; public Button LoadDiskBtn;
         private Simulator _sim;
         private SelectionManager _sel;
         private float _attackFlashTimer;
@@ -30,6 +31,8 @@ namespace FrontierAges.Presentation {
             if (RecBtn) RecBtn.onClick.AddListener(() => _boot.UiStartRecording());
             if (StopRecBtn) StopRecBtn.onClick.AddListener(() => _boot.UiStopRecording());
             if (PlayBtn) PlayBtn.onClick.AddListener(() => _boot.UiPlayRecording());
+            if(SaveDiskBtn) SaveDiskBtn.onClick.AddListener(()=> _boot.UiSaveSnapshotToDisk());
+            if(LoadDiskBtn) LoadDiskBtn.onClick.AddListener(()=> _boot.UiLoadLatestSnapshotFromDisk());
         }
 
         void Update() {
@@ -98,6 +101,7 @@ namespace FrontierAges.Presentation {
                 if (_attackFlashTimer > 0) { _attackFlashTimer -= Time.deltaTime; AttackModeText.text = "ATTACK: Click target"; AttackModeText.enabled = true; }
                 else AttackModeText.enabled = false;
             }
+            if (ReplayStateText && _sim!=null){ string s = _sim.IsRecording?"REC":(_sim.IsPlayback?"PLAY":""); ReplayStateText.text = s; ReplayStateText.enabled = s!=""; }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
         private int FindBuildingIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.BuildingCount;i++) if (ws.Buildings[i].Id==id) return i; return -1; }

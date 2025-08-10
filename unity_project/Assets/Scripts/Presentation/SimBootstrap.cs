@@ -1,6 +1,7 @@
 // Unity presentation bootstrap hooking into pure simulation
 using UnityEngine;
 using FrontierAges.Sim;
+using System.IO;
 
 namespace FrontierAges.Presentation {
     public class SimBootstrap : MonoBehaviour {
@@ -56,6 +57,9 @@ namespace FrontierAges.Presentation {
             }
             _placeBuildingIndex = PlayerPrefs.GetInt("fa_lastBuildingIndex", 0);
             _lastPlacedBuildingIndexPersisted = _placeBuildingIndex;
+
+            // Fog overlay instantiation
+            if (FogMaterial){ var fogGo = new GameObject("FogOverlay"); fogGo.transform.position = Vector3.zero; _fog = fogGo.AddComponent<FogOverlay>(); var mf = fogGo.AddComponent<MeshFilter>(); fogGo.AddComponent<MeshRenderer>().sharedMaterial = FogMaterial; _fog.Init(_sim,128,128); }
         }
 
     public Simulator GetSimulator() => _sim;

@@ -8,13 +8,17 @@ namespace FrontierAges.Presentation {
         public float TileSize = 1f;
         public Color HiddenColor = new Color(0,0,0,0.6f);
         public Color VisibleColor = new Color(0,0,0,0f);
-        private Mesh _mesh;
-        private Color[] _colors;
-        private int _w=128,_h=128;
+    private Mesh _mesh;
+    private Color[] _colors;
+    private int _w=128,_h=128;
+    public int MapWidth = 128; // tiles actually used (culling)
+    public int MapHeight = 128;
+    private Material _matInstance;
         private int _lastTick=-1;
-        void Awake(){ _mesh = new Mesh(); GetComponent<MeshFilter>().mesh = _mesh; BuildMesh(); }
-        public void Init(Simulator sim){ Sim=sim; }
-        void BuildMesh(){
+    void Awake(){ _mesh = new Mesh(); GetComponent<MeshFilter>().mesh = _mesh; _matInstance = new Material(GetComponent<MeshRenderer>().sharedMaterial); GetComponent<MeshRenderer>().material = _matInstance; BuildMesh(); }
+    public void Init(Simulator sim, int mapW=128, int mapH=128){ Sim=sim; MapWidth=mapW; MapHeight=mapH; RebuildIfNeeded(); }
+    public void RebuildIfNeeded(){ if (MapWidth!=_w || MapHeight!=_h) { _w=MapWidth; _h=MapHeight; BuildMesh(); } }
+    void BuildMesh(){
             _mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
             var verts = new System.Collections.Generic.List<Vector3>();
             var tris = new System.Collections.Generic.List<int>();
@@ -31,6 +35,6 @@ namespace FrontierAges.Presentation {
             }
             _mesh.SetVertices(verts); _mesh.SetTriangles(tris,0); var meshColors = new System.Collections.Generic.List<Color>(verts.Count); for(int i=0;i<_w*_h;i++){ var c=_colors[i]; meshColors.Add(c); meshColors.Add(c); meshColors.Add(c); meshColors.Add(c);} _mesh.SetColors(meshColors); _mesh.RecalculateBounds();
         }
-        void LateUpdate(){ if (Sim==null) return; if (Sim.State.Tick==_lastTick) return; _lastTick=Sim.State.Tick; var ws=Sim.State; if(ws.Visibility==null) return; var meshColors = _mesh.colors; for(int y=0;y<_h;y++) for(int x=0;x<_w;x++){ int tileIndex=y*_w+x; byte v= ws.Visibility[x,y]; Color c=v==1? VisibleColor:HiddenColor; int vi=tileIndex*4; if(vi+3<meshColors.Length){ meshColors[vi]=c; meshColors[vi+1]=c; meshColors[vi+2]=c; meshColors[vi+3]=c; } } _mesh.colors=meshColors; }
+    void LateUpdate(){ if (Sim==null) return; if (Sim.State.Tick==_lastTick) return; _lastTick=Sim.State.Tick; var ws=Sim.State; if(ws.Visibility==null) return; if (ws.Visibility.GetLength(0) < _w || ws.Visibility.GetLength(1) < _h) return; var meshColors = _mesh.colors; for(int y=0;y<_h;y++) for(int x=0;x<_w;x++){ int tileIndex=y*_w+x; byte v= ws.Visibility[x,y]; Color c=v==1? VisibleColor:HiddenColor; int vi=tileIndex*4; if(vi+3<meshColors.Length){ meshColors[vi]=c; meshColors[vi+1]=c; meshColors[vi+2]=c; meshColors[vi+3]=c; } } _mesh.colors=meshColors; }
     }
 }
