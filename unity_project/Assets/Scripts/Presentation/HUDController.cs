@@ -92,8 +92,13 @@ namespace FrontierAges.Presentation {
                         int bIdx = FindBuildingIndex(showId);
                         if (bIdx >= 0) {
                             ref var b = ref _sim.State.Buildings[bIdx];
-                            string q = b.HasActiveQueue==1? $" Queue:{b.QueueUnitType} {b.QueueRemainingMs}ms" : " Idle";
-                            SelectionText.text = $"Building {b.Id}{q}";
+                            if (b.IsUnderConstruction==1) {
+                                float prog = b.BuildTotalMs>0? 1f - (b.BuildRemainingMs/(float)b.BuildTotalMs):0f;
+                                SelectionText.text = $"Building {b.Id} Construct {(prog*100f):F0}%";
+                            } else {
+                                string q = b.HasActiveQueue==1? $" Queue:{b.QueueUnitType} {b.QueueRemainingMs}ms" : " Idle";
+                                SelectionText.text = $"Building {b.Id}{q}";
+                            }
                         } else SelectionText.text = "Selection gone";
                     }
                 }

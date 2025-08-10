@@ -57,6 +57,8 @@ namespace FrontierAges.Presentation {
             for (int r=0; r<4; r++) {
                 _sim.SpawnResourceNode(1, r*4000 + 3000, 5000, 50); // spaced line
             }
+            // Grant starting resources
+            _sim.State.Factions[0].Food = 300; _sim.State.Factions[0].Wood = 500; _sim.State.Factions[0].Stone = 300; _sim.State.Factions[0].Metal = 200;
             _placeBuildingIndex = PlayerPrefs.GetInt("fa_lastBuildingIndex", 0);
             _lastPlacedBuildingIndexPersisted = _placeBuildingIndex;
 
@@ -252,15 +254,18 @@ namespace FrontierAges.Presentation {
                     }
                 }
                 if (valid && Input.GetMouseButtonDown(0)) {
-                    _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, w, h, 0);
+                    // Use economy aware construction start
+                    int newId = _sim.TryStartConstruction(0, worldX, worldY, _placeBuildingIndex);
+                    if (newId!=-1) {
                     _placingBuilding = false; if (_ghost) Destroy(_ghost);
                     // Instantiate view at placed location
                     if (BuildingViewPrefab) {
                         var viewGo = Instantiate(BuildingViewPrefab);
                         var bv = viewGo.GetComponent<BuildingView>(); if (!bv) bv = viewGo.AddComponent<BuildingView>();
-                        // We'll need building id: last building added is at index BuildingCount-1
-                        int bid = _sim.State.Buildings[_sim.State.BuildingCount-1].Id;
-                        bv.Init(bid, _sim, w, h);
+                            bv.Init(newId, _sim, w, h);
+                        }
+                    } else {
+                        Debug.Log("Cannot afford or invalid placement");
                     }
                 }
                 if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }

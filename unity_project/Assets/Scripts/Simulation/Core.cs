@@ -77,6 +77,9 @@ namespace FrontierAges.Sim {
         public int QueueTotalMs; // original total for progress UI
     public short FootprintW;
     public short FootprintH;
+    public byte IsUnderConstruction; // 1 if not finished
+    public int BuildTotalMs; // planned total build time
+    public int BuildRemainingMs; // remaining until completion
     }
 
     public struct Faction {
@@ -346,6 +349,23 @@ namespace FrontierAges.Sim {
             return id;
         }
 
+        // Start construction: building enters list with partial HP and construction timers
+        public int StartConstruction(short buildingTypeId, short factionId, int originX, int originY, int wTiles, int hTiles, int buildTimeMs, int maxHP) {
+            if (!CanPlaceBuildingRect(originX, originY, wTiles, hTiles)) return -1;
+            int id = (State.Tick << 20) | State.BuildingCount;
+            if (State.BuildingCount >= State.Buildings.Length) {
+                var arr = new Building[State.Buildings.Length * 2];
+                System.Array.Copy(State.Buildings, arr, State.Buildings.Length);
+                State.Buildings = arr;
+            }
+            // Reserve grid immediately (simple)
+            int gx0 = originX/TileSize; int gy0=originY/TileSize; for(int dx=0;dx<wTiles;dx++) for(int dy=0;dy<hTiles;dy++){ int gx=gx0+dx; int gy=gy0+dy; if(gx>=0&&gy>=0&&gx<GridSize&&gy<GridSize) _grid[gx,gy]=true; }
+            int initialHP = maxHP/10; if(initialHP<=0) initialHP=1;
+            State.Buildings[State.BuildingCount++] = new Building { Id=id, TypeId=buildingTypeId, FactionId=factionId, X=originX, Y=originY, HP=initialHP, QueueUnitType=-1, QueueRemainingMs=0, HasActiveQueue=0, QueueTotalMs=0, FootprintW=(short)wTiles, FootprintH=(short)hTiles, IsUnderConstruction=1, BuildTotalMs=buildTimeMs, BuildRemainingMs=buildTimeMs };
+            _spawnTick[id] = State.Tick;
+            return id;
+        }
+
         public bool CanPlaceBuildingRect(int originX, int originY, int wTiles, int hTiles) {
             int gx0 = originX / TileSize; int gy0 = originY / TileSize;
             for (int dx=0; dx<wTiles; dx++) for (int dy=0; dy<hTiles; dy++) {
@@ -358,6 +378,27 @@ namespace FrontierAges.Sim {
             int gx0 = originX/TileSize; int gy0=originY/TileSize; for(int dx=0;dx<wTiles;dx++) for(int dy=0;dy<hTiles;dy++){ int gx=gx0+dx; int gy=gy0+dy; if(gx>=0&&gy>=0&&gx<GridSize&&gy<GridSize) _grid[gx,gy]=true; }
             // store footprint
             int bIdx = FindBuildingIndex(id); if (bIdx>=0) { State.Buildings[bIdx].FootprintW = (short)wTiles; State.Buildings[bIdx].FootprintH = (short)hTiles; }
+            return id;
+        }
+
+        // New economy-aware placement: returns building id or -1 if insufficient resources / invalid
+        public int TryStartConstruction(int factionId, int originX, int originY, int buildingTypeIndex){
+            if(buildingTypeIndex<0 || buildingTypeIndex >= DataRegistry.Buildings.Length) return -1;
+            var bjson = DataRegistry.Buildings[buildingTypeIndex];
+            int w = bjson.footprint!=null? bjson.footprint.w : 2;
+            int h = bjson.footprint!=null? bjson.footprint.h : 2;
+            if(!CanPlaceBuildingRect(originX, originY, w, h)) return -1;
+            // Costs
+            int needFood = bjson.cost!=null? bjson.cost.food:0;
+            int needWood = bjson.cost!=null? bjson.cost.wood:0;
+            int needStone = bjson.cost!=null? bjson.cost.stone:0;
+            int needMetal = bjson.cost!=null? bjson.cost.metal:0;
+            ref var fac = ref State.Factions[factionId];
+            if(fac.Food < needFood || fac.Wood < needWood || fac.Stone < needStone || fac.Metal < needMetal) return -1;
+            // Deduct
+            fac.Food -= needFood; fac.Wood -= needWood; fac.Stone -= needStone; fac.Metal -= needMetal;
+            int buildTime = bjson.buildTimeMs>0? bjson.buildTimeMs : 10000;
+            int id = StartConstruction((short)buildingTypeIndex, (short)factionId, originX, originY, w, h, buildTime, bjson.maxHP>0? bjson.maxHP:1000);
             return id;
         }
 
@@ -375,6 +416,15 @@ namespace FrontierAges.Sim {
     private void ProductionStep() {
             for (int i = 0; i < State.BuildingCount; i++) {
                 ref var b = ref State.Buildings[i];
+                if (b.IsUnderConstruction==1) {
+                    b.BuildRemainingMs -= SimConstants.MsPerTick;
+                    // Increase HP proportionally
+                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs;
+                    int targetHP = (int)((long)builtMs * b.BuildTotalMs > 0 ? (long)b.BuildTotalMs : 1);
+                    // simple linear fill: targetHP = maxHP * progress (but we don't store per-type max; assume BuildTotalMs maps)
+                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; }
+                    continue;
+                }
                 if (b.HasActiveQueue == 0) continue;
                 b.QueueRemainingMs -= SimConstants.MsPerTick;
                 if (b.QueueRemainingMs <= 0) {
