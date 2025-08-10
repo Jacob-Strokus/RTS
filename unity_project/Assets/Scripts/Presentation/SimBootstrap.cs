@@ -40,7 +40,8 @@ namespace FrontierAges.Presentation {
                 AttackRange = 3000,
                 GatherRatePerSec = 1,
                 CarryCapacity = 5,
-                Flags = 1 // worker
+                Flags = 1, // worker
+                PopCost = 1
             });
             // Spawn placeholder units in a line
             for (int i = 0; i < PreSpawnCount; i++) {
@@ -58,7 +59,7 @@ namespace FrontierAges.Presentation {
                 _sim.SpawnResourceNode(1, r*4000 + 3000, 5000, 50); // spaced line
             }
             // Grant starting resources
-            _sim.State.Factions[0].Food = 300; _sim.State.Factions[0].Wood = 500; _sim.State.Factions[0].Stone = 300; _sim.State.Factions[0].Metal = 200;
+            _sim.State.Factions[0].Food = 300; _sim.State.Factions[0].Wood = 500; _sim.State.Factions[0].Stone = 300; _sim.State.Factions[0].Metal = 200; _sim.State.Factions[0].PopCap = 10; // baseline from starting town center assumption
             _placeBuildingIndex = PlayerPrefs.GetInt("fa_lastBuildingIndex", 0);
             _lastPlacedBuildingIndexPersisted = _placeBuildingIndex;
 

@@ -60,7 +60,7 @@ namespace FrontierAges.Presentation {
             }
             if (ResourceText) {
                 var f = _sim.State.Factions[0];
-                ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal}";
+                ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal} Pop:{f.Pop}/{f.PopCap}";
             }
             if (AutoAssignText) {
                 AutoAssignText.text = _sim.AutoAssignWorkersEnabled ? "AutoAssign: ON (H)" : "AutoAssign: OFF (H)";

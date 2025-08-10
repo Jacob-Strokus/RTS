@@ -38,6 +38,7 @@ namespace FrontierAges.Sim {
     public int GatherRatePerSec; // integer units per second (scaled ms)
     public int CarryCapacity; // max carried units
     public byte Flags; // bit0 = worker
+    public byte PopCost; // population cost (default 1)
     }
 
     public class WorldState {
@@ -84,6 +85,8 @@ namespace FrontierAges.Sim {
 
     public struct Faction {
         public int Food, Wood, Stone, Metal;
+        public int Pop; // current used population
+        public int PopCap; // max population
     }
 
     public struct ResourceNode {
@@ -189,7 +192,7 @@ namespace FrontierAges.Sim {
             for(int i=0;i<State.BuildingCount;i++){ ref var b = ref State.Buildings[i]; HashAdd(ref h,b.Id); HashAdd(ref h,b.TypeId); HashAdd(ref h,b.FactionId); HashAdd(ref h,b.X); HashAdd(ref h,b.Y); HashAdd(ref h,b.HP); HashAdd(ref h,b.QueueUnitType); HashAdd(ref h,b.QueueRemainingMs); HashAdd(ref h,b.HasActiveQueue); HashAdd(ref h,b.QueueTotalMs); HashAdd(ref h,b.FootprintW); HashAdd(ref h,b.FootprintH); }
             HashAdd(ref h, State.ResourceNodeCount);
             for(int i=0;i<State.ResourceNodeCount;i++){ ref var rn = ref State.ResourceNodes[i]; HashAdd(ref h,rn.Id); HashAdd(ref h,rn.ResourceType); HashAdd(ref h,rn.X); HashAdd(ref h,rn.Y); HashAdd(ref h,rn.AmountRemaining); }
-            for(int f=0; f<State.Factions.Length; f++){ ref var fac = ref State.Factions[f]; HashAdd(ref h,fac.Food); HashAdd(ref h,fac.Wood); HashAdd(ref h,fac.Stone); HashAdd(ref h,fac.Metal); HashAdd(ref h, State.FactionTechFlags[f]); HashAdd(ref h, State.FactionResearchTechId[f]); HashAdd(ref h, State.FactionResearchRemainingMs[f]); }
+            for(int f=0; f<State.Factions.Length; f++){ ref var fac = ref State.Factions[f]; HashAdd(ref h,fac.Food); HashAdd(ref h,fac.Wood); HashAdd(ref h,fac.Stone); HashAdd(ref h,fac.Metal); HashAdd(ref h,fac.Pop); HashAdd(ref h,fac.PopCap); HashAdd(ref h, State.FactionTechFlags[f]); HashAdd(ref h, State.FactionResearchTechId[f]); HashAdd(ref h, State.FactionResearchRemainingMs[f]); }
             HashAdd(ref h, (int)_rng.GetState());
             LastTickHash = h;
             _hashRing[_hashRingIndex] = h; _hashTickRing[_hashRingIndex] = State.Tick; _hashRingIndex = (_hashRingIndex + 1) & (HashRingSize-1);
@@ -314,10 +317,17 @@ namespace FrontierAges.Sim {
                 State.Units = newArr;
             }
             if (hp <= 0) hp = State.UnitTypes[typeId].MaxHP;
+            // Population gating (assume caller verified; enforce anyway)
+            ref var fac = ref State.Factions[factionId];
+            byte popCost = State.UnitTypes[typeId].PopCost == 0 ? (byte)1 : State.UnitTypes[typeId].PopCost;
+            if (fac.Pop + popCost > fac.PopCap && fac.PopCap>0) {
+                return -1; // cannot spawn
+            }
             State.Units[State.UnitCount] = new Unit { Id = id, TypeId = typeId, FactionId = factionId, X = x, Y = y, HP = hp, CurrentOrderType = OrderType.None };
             _unitIndex[id] = State.UnitCount;
             _spawnTick[id] = State.Tick;
             State.UnitCount++;
+            if (fac.PopCap>0) fac.Pop += popCost; // don't track pop if cap is zero (no housing yet)
             return id;
         }
 
@@ -407,6 +417,11 @@ namespace FrontierAges.Sim {
             if (idx < 0) return;
             ref var b = ref State.Buildings[idx];
             if (b.HasActiveQueue == 1) return; // single slot for now
+                if (b.IsUnderConstruction==1) return; // cannot train yet
+                // Population check
+                byte popCost = State.UnitTypes[unitType].PopCost==0?(byte)1:State.UnitTypes[unitType].PopCost;
+                ref var fac = ref State.Factions[b.FactionId];
+                if (fac.PopCap>0 && fac.Pop + popCost > fac.PopCap) return; // not enough housing
             b.QueueUnitType = unitType;
             b.QueueRemainingMs = trainTimeMs;
             b.HasActiveQueue = 1;
@@ -418,19 +433,32 @@ namespace FrontierAges.Sim {
                 ref var b = ref State.Buildings[i];
                 if (b.IsUnderConstruction==1) {
                     b.BuildRemainingMs -= SimConstants.MsPerTick;
-                    // Increase HP proportionally
-                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs;
-                    int targetHP = (int)((long)builtMs * b.BuildTotalMs > 0 ? (long)b.BuildTotalMs : 1);
-                    // simple linear fill: targetHP = maxHP * progress (but we don't store per-type max; assume BuildTotalMs maps)
-                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; }
+                    // Use data registry for maxHP & pop provide
+                    int maxHP = 1000; int providesPop = 0;
+                    if (b.TypeId >=0 && b.TypeId < DataRegistry.Buildings.Length) {
+                        var bj = DataRegistry.Buildings[b.TypeId];
+                        if (bj != null) { if (bj.maxHP>0) maxHP = bj.maxHP; providesPop = bj.providesPopulation; }
+                    }
+                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs; if (builtMs<0) builtMs=0; if (b.BuildTotalMs<1) b.BuildTotalMs=1;
+                    b.HP = (int)((long)maxHP * builtMs / b.BuildTotalMs); if (b.HP<1) b.HP=1;
+                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; b.HP = maxHP; // grant population cap
+                        if (providesPop>0) { ref var fac2 = ref State.Factions[b.FactionId]; fac2.PopCap += providesPop; }
+                    }
                     continue;
                 }
                 if (b.HasActiveQueue == 0) continue;
                 b.QueueRemainingMs -= SimConstants.MsPerTick;
                 if (b.QueueRemainingMs <= 0) {
+                    // Re-check pop cap before spawning
+                    if (b.QueueUnitType>=0 && b.QueueUnitType<State.UnitTypeCount) {
+                        byte popCost = State.UnitTypes[b.QueueUnitType].PopCost==0?(byte)1:State.UnitTypes[b.QueueUnitType].PopCost;
+                        ref var fac3 = ref State.Factions[b.FactionId];
+                        if (fac3.PopCap==0 || fac3.Pop + popCost <= fac3.PopCap) {
                     int spawnX = b.X + _rng.Range(-2000, 2000);
                     int spawnY = b.Y + _rng.Range(-2000, 2000);
-                    SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0);
+                            SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0);
+                        }
+                    }
                     b.HasActiveQueue = 0;
                     b.QueueUnitType = -1;
             b.QueueTotalMs = 0;
@@ -619,10 +647,15 @@ namespace FrontierAges.Sim {
 
         private void RemoveUnitByIndex(int idx) {
             int id = State.Units[idx].Id;
+            short factionId = State.Units[idx].FactionId;
             _paths.Remove(id);
             _orderQueues.Remove(id);
             _unitIndex.Remove(id);
             _spawnTick.Remove(id);
+            // Decrement population
+            ref var fac = ref State.Factions[factionId];
+            byte popCost = State.UnitTypes[State.Units[idx].TypeId].PopCost==0?(byte)1:State.UnitTypes[State.Units[idx].TypeId].PopCost;
+            if (fac.Pop >= popCost) fac.Pop -= popCost;
             State.UnitCount--; if (idx != State.UnitCount) { State.Units[idx] = State.Units[State.UnitCount]; _unitIndex[State.Units[idx].Id] = idx; }
         }
 
