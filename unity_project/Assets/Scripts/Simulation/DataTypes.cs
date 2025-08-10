@@ -9,7 +9,8 @@ namespace FrontierAges.Sim {
     [System.Serializable] public class AttackJson { public string id; public float range; public int cooldownMs; public int damage; }
     [System.Serializable] public class AttackJsonList { public AttackJson[] attacks; }
 
-    [System.Serializable] public class BuildingJson { public string id; public int age; public int maxHP; public string[] train; }
+    [System.Serializable] public class BuildingJson { public string id; public int age; public int maxHP; public string[] train; public Footprint footprint; }
+    [System.Serializable] public class Footprint { public int w; public int h; }
     [System.Serializable] public class BuildingJsonList { public BuildingJson[] buildings; }
 
     // Registry holds imported data for reference (not yet fully used by simulation)
