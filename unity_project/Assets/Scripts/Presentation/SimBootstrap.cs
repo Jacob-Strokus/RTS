@@ -19,9 +19,12 @@ namespace FrontierAges.Presentation {
     private bool _autoAssignWorkers = true;
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
 
+        private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
         void Awake() {
             _queue = new CommandQueue();
             _sim = new Simulator(_queue);
+            _autoAssignWorkers = PlayerPrefs.GetInt("fa_autoAssign",1)==1;
+            _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
             // Register provisional unit type 0 (worker placeholder)
             var typeId = _sim.RegisterUnitType(new FrontierAges.Sim.UnitTypeData {
                 MoveSpeedMilliPerSec = 2500,
@@ -81,6 +84,11 @@ namespace FrontierAges.Presentation {
                 } else { if (_ghost) Destroy(_ghost); }
             }
 
+            if (_placingBuilding) {
+                if (Input.GetKeyDown(KeyCode.Period)) { _placeBuildingIndex = (_placeBuildingIndex + 1) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
+                if (Input.GetKeyDown(KeyCode.Comma)) { _placeBuildingIndex = (_placeBuildingIndex - 1 + Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length)) % Mathf.Max(1, FrontierAges.Sim.DataRegistry.Buildings.Length); }
+            }
+
             if (_placingBuilding) UpdateBuildingPlacement();
 
             // T key: enqueue training (unit type 0) at first building if exists
@@ -115,6 +123,7 @@ namespace FrontierAges.Presentation {
             if (Input.GetKeyDown(KeyCode.H)) {
                 _autoAssignWorkers = !_autoAssignWorkers;
                 _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
+                PlayerPrefs.SetInt("fa_autoAssign", _autoAssignWorkers?1:0); PlayerPrefs.Save();
             }
         }
 
@@ -154,8 +163,9 @@ namespace FrontierAges.Presentation {
                 int worldY = (int)(pos.z * SimConstants.PositionScale);
                 // TODO: look up building footprint from imported data (first building in registry if available)
                 int w=2,h=2; // fallback
-                if (FrontierAges.Sim.DataRegistry.Buildings.Length>0 && FrontierAges.Sim.DataRegistry.Buildings[0].footprint!=null) {
-                    w = FrontierAges.Sim.DataRegistry.Buildings[0].footprint.w; h = FrontierAges.Sim.DataRegistry.Buildings[0].footprint.h;
+                if (FrontierAges.Sim.DataRegistry.Buildings.Length>0) {
+                    var bjson = FrontierAges.Sim.DataRegistry.Buildings[Mathf.Clamp(_placeBuildingIndex,0,FrontierAges.Sim.DataRegistry.Buildings.Length-1)];
+                    if (bjson.footprint!=null) { w=bjson.footprint.w; h=bjson.footprint.h; }
                 }
                 bool valid = _sim.CanPlaceBuildingRect(worldX, worldY, w, h);
                 if (_ghost) {
@@ -170,5 +180,20 @@ namespace FrontierAges.Presentation {
                 if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
             }
         }
+
+#if UNITY_EDITOR
+        void OnDrawGizmos() {
+            if (_placingBuilding) {
+                Gizmos.color = new Color(1,1,1,0.08f);
+                int size = 64; // draw partial grid near origin for prototype
+                for (int x=0; x<=size; x++) {
+                    Gizmos.DrawLine(new Vector3(x,0,0), new Vector3(x,0,size));
+                }
+                for (int y=0; y<=size; y++) {
+                    Gizmos.DrawLine(new Vector3(0,0,y), new Vector3(size,0,y));
+                }
+            }
+        }
+#endif
     }
 }
