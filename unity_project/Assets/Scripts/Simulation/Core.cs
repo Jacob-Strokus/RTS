@@ -527,12 +527,21 @@ namespace FrontierAges.Sim {
         public bool TryGetPath(int unitId, List<(int x,int y)> buffer) { if (_paths.TryGetValue(unitId, out var p)) { buffer.Clear(); buffer.AddRange(p); return true; } return false; }
 
         // Fog-of-war skeleton: mark tiles around each faction 0 unit as visible (simple diamond radius)
+        private byte[,] _prevVisibility = new byte[GridSize,GridSize];
+        private List<(int x,int y)> _visionDirty = new List<(int x,int y)>(512);
+        private int _mapWidth = GridSize; private int _mapHeight = GridSize; // configurable later
+        public void ConfigureMapSize(int w, int h) { _mapWidth = System.Math.Clamp(w,1,GridSize); _mapHeight = System.Math.Clamp(h,1,GridSize); }
         private void UpdateVision() {
-            // Clear visibility (single faction prototype)
-            var vis = State.Visibility; if (vis == null) return; for (int x=0;x<GridSize;x++) for (int y=0;y<GridSize;y++) vis[x,y]=0;
+            var vis = State.Visibility; if (vis == null) return;
+            // Reset only active map region
+            for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) vis[x,y]=0;
             int radiusTiles = 6; // placeholder vision radius
-            for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=GridSize||gy>=GridSize) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
+            for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=_mapWidth||gy>=_mapHeight) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
+            // Track dirties comparing with previous
+            _visionDirty.Clear();
+            for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) { if (vis[x,y] != _prevVisibility[x,y]) { _visionDirty.Add((x,y)); _prevVisibility[x,y] = vis[x,y]; } }
         }
+        public IReadOnlyList<(int x,int y)> GetVisionDirty() => _visionDirty;
 
         // Replay skeleton
     private List<Command> _recorded = new List<Command>(4096);

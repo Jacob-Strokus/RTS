@@ -284,5 +284,19 @@ namespace FrontierAges.Presentation {
             }
         }
 #endif
+
+        public UnityEngine.UI.Slider ReplayScrubSlider; // assign in canvas
+        private bool _scrubInProgress;
+        private System.Collections.Generic.List<CommandData> _cachedReplay;
+        public void OnReplayScrubChanged(float v){ if(!_sim.IsPlayback && _cachedReplay!=null && _cachedReplay.Count>0){ int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); } }
+        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null) return; // Capture base snapshot (tick 0) assumed = first snapshot when recording started; for prototype just reload saved snapshot if available
+            // Approach: reset sim via last saved snapshot then apply commands up to relativeTick
+            var baseSnap = SnapshotUtil.Capture(_sim); // fallback minimal baseline (would store at recording start in future)
+            SnapshotUtil.Apply(_sim, baseSnap); // ensure deterministic baseline
+            foreach(var cmd in _cachedReplay){ if(cmd.IssueTick > relativeTick) break; // fast-forward by re-enqueueing immediately
+                switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; }
+                // tick sim forward up to next command tick delta (simplified)
+            }
+        }
     }
 }
