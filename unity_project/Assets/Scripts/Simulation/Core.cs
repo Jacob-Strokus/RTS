@@ -38,6 +38,7 @@ namespace FrontierAges.Sim {
     public int GatherRatePerSec; // integer units per second (scaled ms)
     public int CarryCapacity; // max carried units
     public byte Flags; // bit0 = worker
+    public byte PopCost; // population cost (default 1)
     }
 
     public class WorldState {
@@ -57,11 +58,13 @@ namespace FrontierAges.Sim {
     public long LastTickDurationMsTimes1000; // micro-ish (approx) using System.Diagnostics stopwatch outside core scope
     public long AvgTickDurationMicro;
 
-    // Simple tech/research state (per faction single active research + flags bitmask)
-    public int[] FactionTechFlags = new int[8]; // bits = researched techs
-    public short[] FactionResearchTechId = new short[8]; // -1 none
-    public int[] FactionResearchRemainingMs = new int[8];
-    public int[] FactionResearchTotalMs = new int[8];
+    // Tech / research state (up to 2 concurrent researches; bitmask flags)
+    public const int MaxConcurrentResearch = 2;
+    public int[] FactionTechFlags = new int[8];
+    public short[,] FactionResearchTechId = new short[8,MaxConcurrentResearch]; // -1 when slot free
+    public int[,] FactionResearchRemainingMs = new int[8,MaxConcurrentResearch];
+    public int[,] FactionResearchTotalMs = new int[8,MaxConcurrentResearch];
+    public int[] FactionAges = new int[8]; // highest unlocked age (starts at 1)
     }
 
     public struct Building {
@@ -84,6 +87,8 @@ namespace FrontierAges.Sim {
 
     public struct Faction {
         public int Food, Wood, Stone, Metal;
+        public int Pop; // current used population
+        public int PopCap; // max population
     }
 
     public struct ResourceNode {
@@ -142,7 +147,7 @@ namespace FrontierAges.Sim {
         private const int GridSize = 128;
         private const int TileSize = SimConstants.PositionScale; // 1 world unit tiles
 
-    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; State.Explored = new byte[GridSize,GridSize]; for(int f=0; f<State.FactionResearchTechId.Length; f++){ State.FactionResearchTechId[f] = -1; } }
+    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; State.Explored = new byte[GridSize,GridSize]; for(int f=0; f<8; f++){ for(int s=0;s<MaxConcurrentResearch;s++){ State.FactionResearchTechId[f,s] = -1; } State.FactionAges[f]=1; } }
 
         public bool AutoAssignWorkersEnabled = true;
     // ---- Deterministic Tick Hash ----
@@ -189,7 +194,7 @@ namespace FrontierAges.Sim {
             for(int i=0;i<State.BuildingCount;i++){ ref var b = ref State.Buildings[i]; HashAdd(ref h,b.Id); HashAdd(ref h,b.TypeId); HashAdd(ref h,b.FactionId); HashAdd(ref h,b.X); HashAdd(ref h,b.Y); HashAdd(ref h,b.HP); HashAdd(ref h,b.QueueUnitType); HashAdd(ref h,b.QueueRemainingMs); HashAdd(ref h,b.HasActiveQueue); HashAdd(ref h,b.QueueTotalMs); HashAdd(ref h,b.FootprintW); HashAdd(ref h,b.FootprintH); }
             HashAdd(ref h, State.ResourceNodeCount);
             for(int i=0;i<State.ResourceNodeCount;i++){ ref var rn = ref State.ResourceNodes[i]; HashAdd(ref h,rn.Id); HashAdd(ref h,rn.ResourceType); HashAdd(ref h,rn.X); HashAdd(ref h,rn.Y); HashAdd(ref h,rn.AmountRemaining); }
-            for(int f=0; f<State.Factions.Length; f++){ ref var fac = ref State.Factions[f]; HashAdd(ref h,fac.Food); HashAdd(ref h,fac.Wood); HashAdd(ref h,fac.Stone); HashAdd(ref h,fac.Metal); HashAdd(ref h, State.FactionTechFlags[f]); HashAdd(ref h, State.FactionResearchTechId[f]); HashAdd(ref h, State.FactionResearchRemainingMs[f]); }
+            for(int f=0; f<State.Factions.Length; f++){ ref var fac = ref State.Factions[f]; HashAdd(ref h,fac.Food); HashAdd(ref h,fac.Wood); HashAdd(ref h,fac.Stone); HashAdd(ref h,fac.Metal); HashAdd(ref h,fac.Pop); HashAdd(ref h,fac.PopCap); HashAdd(ref h, State.FactionTechFlags[f]); HashAdd(ref h, State.FactionAges[f]); for(int s=0;s<MaxConcurrentResearch;s++){ HashAdd(ref h, State.FactionResearchTechId[f,s]); HashAdd(ref h, State.FactionResearchRemainingMs[f,s]); } }
             HashAdd(ref h, (int)_rng.GetState());
             LastTickHash = h;
             _hashRing[_hashRingIndex] = h; _hashTickRing[_hashRingIndex] = State.Tick; _hashRingIndex = (_hashRingIndex + 1) & (HashRingSize-1);
@@ -314,10 +319,17 @@ namespace FrontierAges.Sim {
                 State.Units = newArr;
             }
             if (hp <= 0) hp = State.UnitTypes[typeId].MaxHP;
+            // Population gating (assume caller verified; enforce anyway)
+            ref var fac = ref State.Factions[factionId];
+            byte popCost = State.UnitTypes[typeId].PopCost == 0 ? (byte)1 : State.UnitTypes[typeId].PopCost;
+            if (fac.Pop + popCost > fac.PopCap && fac.PopCap>0) {
+                return -1; // cannot spawn
+            }
             State.Units[State.UnitCount] = new Unit { Id = id, TypeId = typeId, FactionId = factionId, X = x, Y = y, HP = hp, CurrentOrderType = OrderType.None };
             _unitIndex[id] = State.UnitCount;
             _spawnTick[id] = State.Tick;
             State.UnitCount++;
+            if (fac.PopCap>0) fac.Pop += popCost; // don't track pop if cap is zero (no housing yet)
             return id;
         }
 
@@ -407,6 +419,11 @@ namespace FrontierAges.Sim {
             if (idx < 0) return;
             ref var b = ref State.Buildings[idx];
             if (b.HasActiveQueue == 1) return; // single slot for now
+                if (b.IsUnderConstruction==1) return; // cannot train yet
+                // Population check
+                byte popCost = State.UnitTypes[unitType].PopCost==0?(byte)1:State.UnitTypes[unitType].PopCost;
+                ref var fac = ref State.Factions[b.FactionId];
+                if (fac.PopCap>0 && fac.Pop + popCost > fac.PopCap) return; // not enough housing
             b.QueueUnitType = unitType;
             b.QueueRemainingMs = trainTimeMs;
             b.HasActiveQueue = 1;
@@ -418,19 +435,32 @@ namespace FrontierAges.Sim {
                 ref var b = ref State.Buildings[i];
                 if (b.IsUnderConstruction==1) {
                     b.BuildRemainingMs -= SimConstants.MsPerTick;
-                    // Increase HP proportionally
-                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs;
-                    int targetHP = (int)((long)builtMs * b.BuildTotalMs > 0 ? (long)b.BuildTotalMs : 1);
-                    // simple linear fill: targetHP = maxHP * progress (but we don't store per-type max; assume BuildTotalMs maps)
-                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; }
+                    // Use data registry for maxHP & pop provide
+                    int maxHP = 1000; int providesPop = 0;
+                    if (b.TypeId >=0 && b.TypeId < DataRegistry.Buildings.Length) {
+                        var bj = DataRegistry.Buildings[b.TypeId];
+                        if (bj != null) { if (bj.maxHP>0) maxHP = bj.maxHP; providesPop = bj.providesPopulation; }
+                    }
+                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs; if (builtMs<0) builtMs=0; if (b.BuildTotalMs<1) b.BuildTotalMs=1;
+                    b.HP = (int)((long)maxHP * builtMs / b.BuildTotalMs); if (b.HP<1) b.HP=1;
+                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; b.HP = maxHP; // grant population cap
+                        if (providesPop>0) { ref var fac2 = ref State.Factions[b.FactionId]; fac2.PopCap += providesPop; }
+                    }
                     continue;
                 }
                 if (b.HasActiveQueue == 0) continue;
                 b.QueueRemainingMs -= SimConstants.MsPerTick;
                 if (b.QueueRemainingMs <= 0) {
+                    // Re-check pop cap before spawning
+                    if (b.QueueUnitType>=0 && b.QueueUnitType<State.UnitTypeCount) {
+                        byte popCost = State.UnitTypes[b.QueueUnitType].PopCost==0?(byte)1:State.UnitTypes[b.QueueUnitType].PopCost;
+                        ref var fac3 = ref State.Factions[b.FactionId];
+                        if (fac3.PopCap==0 || fac3.Pop + popCost <= fac3.PopCap) {
                     int spawnX = b.X + _rng.Range(-2000, 2000);
                     int spawnY = b.Y + _rng.Range(-2000, 2000);
-                    SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0);
+                            SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0);
+                        }
+                    }
                     b.HasActiveQueue = 0;
                     b.QueueUnitType = -1;
             b.QueueTotalMs = 0;
@@ -619,10 +649,15 @@ namespace FrontierAges.Sim {
 
         private void RemoveUnitByIndex(int idx) {
             int id = State.Units[idx].Id;
+            short factionId = State.Units[idx].FactionId;
             _paths.Remove(id);
             _orderQueues.Remove(id);
             _unitIndex.Remove(id);
             _spawnTick.Remove(id);
+            // Decrement population
+            ref var fac = ref State.Factions[factionId];
+            byte popCost = State.UnitTypes[State.Units[idx].TypeId].PopCost==0?(byte)1:State.UnitTypes[State.Units[idx].TypeId].PopCost;
+            if (fac.Pop >= popCost) fac.Pop -= popCost;
             State.UnitCount--; if (idx != State.UnitCount) { State.Units[idx] = State.Units[State.UnitCount]; _unitIndex[State.Units[idx].Id] = idx; }
         }
 
@@ -650,12 +685,15 @@ namespace FrontierAges.Sim {
         }
         public IReadOnlyList<(int x,int y)> GetVisionDirty() => _visionDirty;
 
-        // --- Research / Tech System (single active per faction) ---
-        public bool StartResearch(short techId, int factionId, int timeMs){ if(factionId<0||factionId>=State.Factions.Length) return false; if(IsTechResearched(factionId, techId)) return false; if(State.FactionResearchTechId[factionId]!=-1) return false; State.FactionResearchTechId[factionId]=techId; State.FactionResearchRemainingMs[factionId]=timeMs; State.FactionResearchTotalMs[factionId]=timeMs; return true; }
-        public bool IsTechResearched(int factionId, short techId){ return (State.FactionTechFlags[factionId] & (1<<techId))!=0; }
-        private void ResearchStep(){ for(int f=0; f<State.FactionResearchTechId.Length; f++){ short tid = State.FactionResearchTechId[f]; if(tid<0) continue; State.FactionResearchRemainingMs[f]-=SimConstants.MsPerTick; if(State.FactionResearchRemainingMs[f]<=0){ State.FactionTechFlags[f] |= (1<<tid); State.FactionResearchTechId[f]=-1; State.FactionResearchRemainingMs[f]=0; State.FactionResearchTotalMs[f]=0; // simple example: tech0 improves worker gather rate
-                        if(tid==0){ for(int ut=0; ut<State.UnitTypeCount; ut++){ var utd = State.UnitTypes[ut]; if((utd.Flags & 1)!=0){ utd.GatherRatePerSec += 1; State.UnitTypes[ut] = utd; } } }
-                    } } }
+    // --- Research / Tech System (multi-slot) ---
+    public bool IsTechResearched(int factionId, short techIndex){ return (State.FactionTechFlags[factionId] & (1<<techIndex))!=0; }
+    private int FindTechIndex(string id){ if(string.IsNullOrEmpty(id)) return -1; for(short i=0;i<DataRegistry.Techs.Length;i++) if(DataRegistry.Techs[i].id==id) return i; return -1; }
+    private bool HasPrereqs(int factionId, short techIndex){ if(techIndex<0||techIndex>=DataRegistry.Techs.Length) return false; var t=DataRegistry.Techs[techIndex]; if(t.prereq!=null){ foreach(var rid in t.prereq){ short pi=(short)FindTechIndex(rid); if(pi<0 || !IsTechResearched(factionId,pi)) return false; } } return true; }
+    private static bool CanAfford(ref Faction f, CostJson c){ if(c==null) return true; return f.Food>=c.food && f.Wood>=c.wood && f.Stone>=c.stone && f.Metal>=c.metal; }
+    private static void DeductCost(ref Faction f, CostJson c){ if(c==null) return; f.Food-=c.food; f.Wood-=c.wood; f.Stone-=c.stone; f.Metal-=c.metal; }
+    public bool StartResearch(short techIndex, int factionId){ if(factionId<0||factionId>=State.Factions.Length) return false; if(techIndex<0||techIndex>=DataRegistry.Techs.Length) return false; if(IsTechResearched(factionId, techIndex)) return false; var tech = DataRegistry.Techs[techIndex]; if(State.FactionAges[factionId] < tech.age) return false; if(!HasPrereqs(factionId, techIndex)) return false; ref var fac = ref State.Factions[factionId]; if(!CanAfford(ref fac, tech.cost)) return false; DeductCost(ref fac, tech.cost); for(int s=0;s<MaxConcurrentResearch;s++){ if(State.FactionResearchTechId[factionId,s]==-1){ State.FactionResearchTechId[factionId,s]=techIndex; State.FactionResearchRemainingMs[factionId,s]=tech.researchTimeMs; State.FactionResearchTotalMs[factionId,s]=tech.researchTimeMs; return true; } } return false; }
+    private void ResearchStep(){ for(int f=0; f<8; f++){ for(int s=0;s<MaxConcurrentResearch;s++){ short tid = State.FactionResearchTechId[f,s]; if(tid<0) continue; State.FactionResearchRemainingMs[f,s]-=SimConstants.MsPerTick; if(State.FactionResearchRemainingMs[f,s]<=0){ State.FactionTechFlags[f] |= (1<<tid); ApplyTechEffects(f, tid); State.FactionResearchTechId[f,s]=-1; State.FactionResearchRemainingMs[f,s]=0; State.FactionResearchTotalMs[f,s]=0; } } } }
+    private void ApplyTechEffects(int factionId, short techIndex){ if(techIndex<0||techIndex>=DataRegistry.Techs.Length) return; var t = DataRegistry.Techs[techIndex]; if(t.effects==null) return; foreach(var ef in t.effects){ if(ef==null) continue; switch(ef.type){ case "unlockAge": if(ef.targetAge>State.FactionAges[factionId]) State.FactionAges[factionId]=ef.targetAge; break; case "gatherRateMul": for(int ut=0; ut<State.UnitTypeCount; ut++){ var utd = State.UnitTypes[ut]; if((utd.Flags & 1)!=0){ utd.GatherRatePerSec = (int)(utd.GatherRatePerSec * (ef.mul!=0?ef.mul:1f)); State.UnitTypes[ut]=utd; } } break; case "gatherRateAdd": for(int ut=0; ut<State.UnitTypeCount; ut++){ var utd = State.UnitTypes[ut]; if((utd.Flags & 1)!=0){ utd.GatherRatePerSec += (int)ef.add; State.UnitTypes[ut]=utd; } } break; } } }
 
         // Fast forward utility using replay batches (for editor scrub)
         public void FastForwardFromBaseline(Snapshot baseline, System.Collections.Generic.List<Command> recorded, int targetRelativeTick){ if(baseline==null||recorded==null){ return; } SnapshotUtil.Apply(State, baseline); // Reset world
@@ -759,7 +797,7 @@ namespace FrontierAges.Sim {
     }
 
     // Snapshot DTOs for save/load (simplified JSON-friendly)
-    public static class SnapshotVersions { public const string Current = "2"; }
+    public static class SnapshotVersions { public const string Current = "3"; }
     [System.Serializable] public class Snapshot {
         public int tick;
         public UnitSnap[] units;
@@ -771,6 +809,8 @@ namespace FrontierAges.Sim {
         public long savedUnix;
         public int unitCount;
         public int buildingCount;
+    public int[] factionPop; public int[] factionPopCap;
+    public int[] factionTechFlags; public short[] activeResearchTech; public int[] activeResearchRemaining; public byte[,] explored; // simple serialization (Unity JSON won't handle multidim; placeholder, may need flatten later)
     }
     [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int spawnTick; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
     [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; public int spawnTick; }
@@ -792,7 +832,8 @@ namespace FrontierAges.Sim {
                 version = SnapshotVersions.Current,
                 savedUnix = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 unitCount = ws.UnitCount,
-                buildingCount = ws.BuildingCount
+                buildingCount = ws.BuildingCount,
+                factionPop = new int[ws.Factions.Length], factionPopCap = new int[ws.Factions.Length], factionTechFlags = new int[ws.Factions.Length], activeResearchTech = new short[ws.Factions.Length], activeResearchRemaining = new int[ws.Factions.Length]
             };
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
@@ -817,7 +858,7 @@ namespace FrontierAges.Sim {
                 int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(b.Id, out st);
                 snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue, fw = b.FootprintW, fh = b.FootprintH, spawnTick = st };
             }
-            for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; }
+            for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; if (snap.factionPop!=null){ snap.factionPop[f]=fac.Pop; snap.factionPopCap[f]=fac.PopCap; } if (snap.factionTechFlags!=null){ snap.factionTechFlags[f]=ws.FactionTechFlags[f]; snap.activeResearchTech[f]=ws.FactionResearchTechId[f]; snap.activeResearchRemaining[f]=ws.FactionResearchRemainingMs[f]; } }
             for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(rn.Id, out st); snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining, spawnTick = st }; }
             return snap;
         }
@@ -850,6 +891,21 @@ namespace FrontierAges.Sim {
                     if (spawnTicks != null) spawnTicks[us.id] = us.spawnTick;
                 }
             }
+            if (snap.factions != null) {
+                for (int f=0; f<ws.Factions.Length && f<snap.factions.Length; f++) {
+                    var fs = snap.factions[f];
+                    ws.Factions[f].Food=fs.food; ws.Factions[f].Wood=fs.wood; ws.Factions[f].Stone=fs.stone; ws.Factions[f].Metal=fs.metal;
+                    if (snap.factionPop!=null && f<snap.factionPop.Length) ws.Factions[f].Pop = snap.factionPop[f];
+                    if (snap.factionPopCap!=null && f<snap.factionPopCap.Length) ws.Factions[f].PopCap = snap.factionPopCap[f];
+                }
+            }
+            if (snap.factionTechFlags!=null) {
+                for(int f=0; f<ws.Factions.Length && f<snap.factionTechFlags.Length; f++) {
+                    ws.FactionTechFlags[f]=snap.factionTechFlags[f];
+                    if (snap.activeResearchTech!=null && f<snap.activeResearchTech.Length) ws.FactionResearchTechId[f]=snap.activeResearchTech[f];
+                    if (snap.activeResearchRemaining!=null && f<snap.activeResearchRemaining.Length) ws.FactionResearchRemainingMs[f]=snap.activeResearchRemaining[f];
+                }
+            }
             if (snap.buildings != null) {
                 if (ws.Buildings.Length < snap.buildings.Length) ws.Buildings = new Building[snap.buildings.Length];
                 foreach (var bs in snap.buildings) {
@@ -857,26 +913,29 @@ namespace FrontierAges.Sim {
                     if (spawnTicks != null) spawnTicks[bs.id] = bs.spawnTick;
                 }
             }
-            if (snap.factions != null) {
-                for (int f=0; f<ws.Factions.Length && f<snap.factions.Length; f++) { var fs = snap.factions[f]; ws.Factions[f].Food=fs.food; ws.Factions[f].Wood=fs.wood; ws.Factions[f].Stone=fs.stone; ws.Factions[f].Metal=fs.metal; }
-            }
             if (snap.resourceNodes != null) {
                 if (ws.ResourceNodes.Length < snap.resourceNodes.Length) ws.ResourceNodes = new ResourceNode[snap.resourceNodes.Length];
-                foreach (var rn in snap.resourceNodes) { ws.ResourceNodes[ws.ResourceNodeCount++] = new ResourceNode { Id=rn.id, ResourceType=rn.r, X=rn.x, Y=rn.y, AmountRemaining=rn.amt }; if (spawnTicks!=null) spawnTicks[rn.id] = rn.spawnTick; }
+                foreach (var rn in snap.resourceNodes) {
+                    ws.ResourceNodes[ws.ResourceNodeCount++] = new ResourceNode { Id=rn.id, ResourceType=rn.r, X=rn.x, Y=rn.y, AmountRemaining=rn.amt };
+                    if (spawnTicks!=null) spawnTicks[rn.id] = rn.spawnTick;
+                }
             }
         }
     }
-    // Migration stub (v1 -> v2 adds spawnTick fields)
+    // Migration stub (v1 -> v3 adds spawnTick, then pop/tech arrays)
     public static class SnapshotMigrator {
         public static void Migrate(Snapshot snap) {
             if (snap.version == SnapshotVersions.Current) return;
             switch(snap.version) {
                 case "1":
-                    // spawnTick absent; leave default 0
+                    // upgrade to 2 (spawn tick already handled implicitly by default zeros)
+                    goto case "2";
+                case "2":
+                    // add new arrays for v3
+                    snap.factionPop = new int[8]; snap.factionPopCap = new int[8]; snap.factionTechFlags = new int[8]; snap.activeResearchTech = new short[8]; snap.activeResearchRemaining = new int[8];
                     snap.version = SnapshotVersions.Current;
                     break;
                 default:
-                    // Unknown future version: best-effort accept
                     snap.version = SnapshotVersions.Current;
                     break;
             }

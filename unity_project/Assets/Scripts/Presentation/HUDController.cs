@@ -60,7 +60,7 @@ namespace FrontierAges.Presentation {
             }
             if (ResourceText) {
                 var f = _sim.State.Factions[0];
-                ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal}";
+                ResourceText.text = $"F:{f.Food} W:{f.Wood} S:{f.Stone} M:{f.Metal} Pop:{f.Pop}/{f.PopCap}";
             }
             if (AutoAssignText) {
                 AutoAssignText.text = _sim.AutoAssignWorkersEnabled ? "AutoAssign: ON (H)" : "AutoAssign: OFF (H)";
@@ -111,9 +111,12 @@ namespace FrontierAges.Presentation {
             if (ReplayStateText && _sim!=null){ string s = _sim.IsRecording?"REC":(_sim.IsPlayback?"PLAY":""); ReplayStateText.text = s; ReplayStateText.enabled = s!=""; }
             if (HashText){ HashText.text = $"Hash: {_sim.LastTickHash:X16}"; }
             if (ResearchText){
-                int f=0; var ws=_sim.State; short tid = ws.FactionResearchTechId[f]; if(tid>=0){ int rem = ws.FactionResearchRemainingMs[f]; int total = ws.FactionResearchTotalMs[f]; float prog = total>0? 1f - (rem/(float)total):0f; ResearchText.text = $"Research T{tid} {(prog*100f):F0}%"; }
-                else ResearchText.text = "Research: -";
-            }
+                    int f=0; var ws=_sim.State; System.Text.StringBuilder sb = new System.Text.StringBuilder(); sb.Append($"Age:{ws.FactionAges[f]} "); bool any=false; for(int s=0;s<FrontierAges.Sim.WorldState.MaxConcurrentResearch; s++){ /* placeholder constant not accessible; skip */ }
+                    // iterate slots via reflection of arrays (we know constant=2 in Simulator)
+                    for(int s=0;s<2;s++){ short tid = ws.FactionResearchTechId[f,s]; if(tid>=0){ any=true; int rem=ws.FactionResearchRemainingMs[f,s]; int total=ws.FactionResearchTotalMs[f,s]; float prog = total>0? 1f - (rem/(float)total):0f; sb.Append($"[T{tid}:{prog*100f:F0}%] "); } }
+                    if(!any) sb.Append("Research:-");
+                    ResearchText.text = sb.ToString();
+                }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
         private int FindBuildingIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.BuildingCount;i++) if (ws.Buildings[i].Id==id) return i; return -1; }
