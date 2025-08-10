@@ -1,0 +1,1 @@
+(Placeholder) Editor tools assembly: Gameplay.Editor depending on UnityEditor + Simulation + Presentation as needed.

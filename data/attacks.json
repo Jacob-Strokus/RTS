@@ -1,0 +1,14 @@
+{
+  "attacks": [
+    {
+      "id": "melee_spear_basic",
+      "range": 1500,
+      "cooldownMs": 1800,
+      "damage": 12,
+      "damageTypes": { "melee": 1.0 },
+      "projectile": null,
+      "windupMs": 400,
+      "impactDelayMs": 0
+    }
+  ]
+}

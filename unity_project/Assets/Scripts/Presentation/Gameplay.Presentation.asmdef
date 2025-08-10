@@ -1,0 +1,16 @@
+{
+  "name": "Gameplay.Presentation",
+  "rootNamespace": "FrontierAges.Presentation",
+  "references": [
+    "Gameplay.Simulation"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

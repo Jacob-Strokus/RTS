@@ -1,0 +1,1 @@
+(Placeholder) This folder will house pure-simulation C# assembly (create Assembly Definition in Unity Editor named Gameplay.Simulation).
