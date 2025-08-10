@@ -3,6 +3,7 @@ using UnityEngine;
 using FrontierAges.Sim;
 using System.IO;
 using System.Linq;
+using System.IO.Compression;
 
 namespace FrontierAges.Presentation {
     public class SimBootstrap : MonoBehaviour {
@@ -157,6 +158,11 @@ namespace FrontierAges.Presentation {
             if (ReplayScrubSlider && _cachedReplay!=null && _cachedReplay.Count>0) {
                 if (Input.GetMouseButtonUp(0) && Time.time - _scrubLastChangeTime > ScrubDebounceSeconds) ApplyPendingScrub();
             }
+
+            // R key: start sample research tech 0 (improves worker gather rate)
+            if (Input.GetKeyDown(KeyCode.R)) {
+                _sim.StartResearch(0, 0, 8000); // 8s research
+            }
         }
 
         private void TryIssueAttackFromSelection() {
@@ -299,23 +305,21 @@ namespace FrontierAges.Presentation {
         public float ScrubDebounceSeconds = 0.15f;
         public UnityEngine.UI.Text SnapshotMetaText;
         public void OnReplayScrubChanged(float v){ _scrubLastChangeTime = Time.time; }
-        private void ApplyPendingScrub(){ if(!ReplayScrubSlider) return; float v = ReplayScrubSlider.value; int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); }
-        public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json").OrderByDescending(f=>f).Take(30); foreach(var f in files){ var json=File.ReadAllText(f); var snap=JsonUtility.FromJson<Snapshot>(json); var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = $"{Path.GetFileNameWithoutExtension(f)} U:{snap.unitCount} B:{snap.buildingCount}"; if(btn) btn.onClick.AddListener(()=> { SnapshotUtil.Apply(_sim,snap); RebuildViews(); if(SnapshotMetaText) SnapshotMetaText.text=$"Tick {snap.tick} Units {snap.unitCount} Buildings {snap.buildingCount}"; }); } }
+    private void ApplyPendingScrub(){ if(!ReplayScrubSlider) return; float v = ReplayScrubSlider.value; int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); }
+        public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).Take(50); foreach(var f in files){ Snapshot snap=null; try { snap = LoadSnapshotFromFile(f); } catch{} if(snap==null) continue; var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = $"{Path.GetFileNameWithoutExtension(f)} U:{snap.unitCount} B:{snap.buildingCount} v{snap.version}"; if(btn) btn.onClick.AddListener(()=> { SnapshotUtil.Apply(_sim,snap); RebuildViews(); if(SnapshotMetaText) SnapshotMetaText.text=$"Tick {snap.tick} Units {snap.unitCount} Buildings {snap.buildingCount} v{snap.version}"; }); // add delete if child button named Delete exists
+                var del = go.transform.Find("Delete"); if(del){ var db = del.GetComponent<UnityEngine.UI.Button>(); if(db){ string pathCopy=f; db.onClick.AddListener(()=> { try{ File.Delete(pathCopy);} catch{} RefreshSnapshotList(); }); } }
+            } }
+        private Snapshot LoadSnapshotFromFile(string path){ if(path.EndsWith(".gz")){ using(var fs=File.OpenRead(path)) using(var gz=new GZipStream(fs,CompressionMode.Decompress)) using(var ms=new MemoryStream()){ gz.CopyTo(ms); var json=System.Text.Encoding.UTF8.GetString(ms.ToArray()); return JsonUtility.FromJson<Snapshot>(json);} } else { var json=File.ReadAllText(path); return JsonUtility.FromJson<Snapshot>(json);} }
+        private void SaveSnapshotToDisk(Snapshot snap){ if(!Directory.Exists(SnapshotDirectory)) Directory.CreateDirectory(SnapshotDirectory); var json=JsonUtility.ToJson(snap); var bytes=System.Text.Encoding.UTF8.GetBytes(json); var file=$"snap_{System.DateTime.UtcNow:yyyyMMdd_HHmmss}_{snap.unitCount}u_{snap.buildingCount}b.json.gz"; var path=Path.Combine(SnapshotDirectory,file); using(var fs=File.Create(path)) using(var gz=new GZipStream(fs,CompressionLevel.Optimal)){ gz.Write(bytes,0,bytes.Length);} }
+        public string SnapshotDirectory => Path.Combine(Application.persistentDataPath, "Snapshots");
+        public void UiSaveSnapshotDisk(){ var snap=SnapshotUtil.Capture(_sim); SaveSnapshotToDisk(snap); RefreshSnapshotList(); }
+        public void UiLoadLatest(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
         public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
-        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; SnapshotUtil.Apply(_sim.State, _recordBaseline); // baseline
-            // Batch commands grouped by IssueTick; advance simulation to each tick
-            int currentRelative = 0; int maxTick = relativeTick;
-            int i=0; while(i<_cachedReplay.Count && _cachedReplay[i].IssueTick <= maxTick){ int cmdTick = _cachedReplay[i].IssueTick; while(currentRelative < cmdTick){ _sim.Tick(); currentRelative++; }
-                // execute all commands at this tick
-                while(i<_cachedReplay.Count && _cachedReplay[i].IssueTick==cmdTick){ var cmd = _cachedReplay[i]; // missing entity guard
-                    if (cmd.Type == CommandType.Move || cmd.Type==CommandType.Attack || cmd.Type==CommandType.Gather){
-                        // For move/gather/attack we don't validate existence deeply (prototype); could add map later
-                        switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; }
-                    }
-                    i++; }
-            }
-            while(currentRelative < maxTick){ _sim.Tick(); currentRelative++; }
-            RebuildViews();
-        }
+        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; // Use new fast forward API
+            // Convert cached replay (CommandData) to Command list proxy
+            var cmdList = new System.Collections.Generic.List<FrontierAges.Sim.Command>(_cachedReplay.Count);
+            foreach(var c in _cachedReplay){ cmdList.Add(new FrontierAges.Sim.Command{ IssueTick=c.IssueTick, Type=(FrontierAges.Sim.CommandType)c.Type, EntityId=c.EntityId, TargetX=c.TargetX, TargetY=c.TargetY }); }
+            _sim.FastForwardFromBaseline(_recordBaseline, cmdList, relativeTick);
+            RebuildViews(); }
     }
 }

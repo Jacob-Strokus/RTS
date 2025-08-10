@@ -52,9 +52,16 @@ namespace FrontierAges.Sim {
         public ResourceNode[] ResourceNodes = new ResourceNode[256];
         public int ResourceNodeCount;
     public byte[,] Visibility; // fog-of-war tiles (1 visible, 0 unseen) prototype
+    public byte[,] Explored; // enhanced fog: tiles that were ever seen (1 explored)
     // Profiling accumulators (not deterministic-critical)
     public long LastTickDurationMsTimes1000; // micro-ish (approx) using System.Diagnostics stopwatch outside core scope
     public long AvgTickDurationMicro;
+
+    // Simple tech/research state (per faction single active research + flags bitmask)
+    public int[] FactionTechFlags = new int[8]; // bits = researched techs
+    public short[] FactionResearchTechId = new short[8]; // -1 none
+    public int[] FactionResearchRemainingMs = new int[8];
+    public int[] FactionResearchTotalMs = new int[8];
     }
 
     public struct Building {
@@ -125,14 +132,30 @@ namespace FrontierAges.Sim {
     // Exposed as internal so SnapshotUtil & debug systems can read (prototype scope)
     internal readonly Dictionary<int,List<QueuedOrder>> _orderQueues = new Dictionary<int,List<QueuedOrder>>();
     internal readonly Dictionary<int,List<(int x,int y)>> _paths = new Dictionary<int,List<(int x,int y)>>();
+    // Spawn tick tracking for replay validation
+    internal readonly Dictionary<int,int> _spawnTick = new Dictionary<int,int>();
     private readonly Dictionary<int,int> _unitIndex = new Dictionary<int,int>(); // id -> index
         private bool[,] _grid; // occupancy grid
         private const int GridSize = 128;
         private const int TileSize = SimConstants.PositionScale; // 1 world unit tiles
 
-    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; }
+    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; State.Explored = new byte[GridSize,GridSize]; for(int f=0; f<State.FactionResearchTechId.Length; f++){ State.FactionResearchTechId[f] = -1; } }
 
         public bool AutoAssignWorkersEnabled = true;
+    // ---- Deterministic Tick Hash ----
+    private const int HashRingSize = 512;
+    private ulong[] _hashRing = new ulong[HashRingSize];
+    private int[] _hashTickRing = new int[HashRingSize];
+    private int _hashRingIndex;
+    public ulong LastTickHash { get; private set; }
+
+    // ---- Replay Batches (compressed view) ----
+    private struct ReplayBatch { public int Tick; public int StartIndex; public int Count; }
+    private System.Collections.Generic.List<ReplayBatch> _replayBatches = new System.Collections.Generic.List<ReplayBatch>(256);
+    private bool _replayBatchesDirty;
+    private void MarkReplayDirty(){ _replayBatchesDirty = true; }
+    private void RebuildReplayBatchesIfNeeded(){ if(!_replayBatchesDirty) return; _replayBatches.Clear(); if(_recorded.Count==0){ _replayBatchesDirty=false; return;} int start=0; int cur=_recorded[0].IssueTick; for(int i=1;i<_recorded.Count;i++){ int t=_recorded[i].IssueTick; if(t!=cur){ _replayBatches.Add( new ReplayBatch{ Tick=cur, StartIndex=start, Count=i-start}); start=i; cur=t; } } _replayBatches.Add(new ReplayBatch{ Tick=cur, StartIndex=start, Count=_recorded.Count-start}); _replayBatchesDirty=false; }
+    public System.Collections.Generic.IReadOnlyList<ReplayBatch> GetReplayBatches(){ RebuildReplayBatchesIfNeeded(); return _replayBatches; }
         public void Tick() {
             State.Tick++;
             ProcessCommandsWrapper();
@@ -140,14 +163,40 @@ namespace FrontierAges.Sim {
             MovementStep();
             UpdateVision(); // fog-of-war skeleton
             ProductionStep();
+            ResearchStep();
             CombatStep();
             GatherStep();
             if (AutoAssignWorkersEnabled) AutoAssignIdleWorkers();
             // Future: research, pathfinding, combat, economy, vision
+            ComputeAndStoreTickHash();
         }
+
+        private static ulong Mix64(ulong z) {
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            return z ^ (z >> 31);
+        }
+        private static void HashAdd(ref ulong h, int v) { unchecked { h ^= Mix64((ulong)(uint)v + 0x9E3779B97F4A7C15UL); h = (h << 13) | (h >> 51); } }
+        private void ComputeAndStoreTickHash(){
+            ulong h = 0xCAFEBABEDEADBEEFUL;
+            HashAdd(ref h, State.Tick);
+            HashAdd(ref h, State.UnitCount);
+            for(int i=0;i<State.UnitCount;i++){ ref var u = ref State.Units[i]; HashAdd(ref h,u.Id); HashAdd(ref h,u.TypeId); HashAdd(ref h,u.FactionId); HashAdd(ref h,u.X); HashAdd(ref h,u.Y); HashAdd(ref h,u.HP); HashAdd(ref h,u.TargetX); HashAdd(ref h,u.TargetY); HashAdd(ref h,u.HasMoveTarget); HashAdd(ref h,(int)u.CurrentOrderType); HashAdd(ref h,u.CurrentOrderEntity); HashAdd(ref h,u.AttackTargetId); HashAdd(ref h,u.CarryAmount); HashAdd(ref h,u.CarryResourceType); HashAdd(ref h,u.ReturningWithCargo); }
+            HashAdd(ref h, State.BuildingCount);
+            for(int i=0;i<State.BuildingCount;i++){ ref var b = ref State.Buildings[i]; HashAdd(ref h,b.Id); HashAdd(ref h,b.TypeId); HashAdd(ref h,b.FactionId); HashAdd(ref h,b.X); HashAdd(ref h,b.Y); HashAdd(ref h,b.HP); HashAdd(ref h,b.QueueUnitType); HashAdd(ref h,b.QueueRemainingMs); HashAdd(ref h,b.HasActiveQueue); HashAdd(ref h,b.QueueTotalMs); HashAdd(ref h,b.FootprintW); HashAdd(ref h,b.FootprintH); }
+            HashAdd(ref h, State.ResourceNodeCount);
+            for(int i=0;i<State.ResourceNodeCount;i++){ ref var rn = ref State.ResourceNodes[i]; HashAdd(ref h,rn.Id); HashAdd(ref h,rn.ResourceType); HashAdd(ref h,rn.X); HashAdd(ref h,rn.Y); HashAdd(ref h,rn.AmountRemaining); }
+            for(int f=0; f<State.Factions.Length; f++){ ref var fac = ref State.Factions[f]; HashAdd(ref h,fac.Food); HashAdd(ref h,fac.Wood); HashAdd(ref h,fac.Stone); HashAdd(ref h,fac.Metal); HashAdd(ref h, State.FactionTechFlags[f]); HashAdd(ref h, State.FactionResearchTechId[f]); HashAdd(ref h, State.FactionResearchRemainingMs[f]); }
+            HashAdd(ref h, (int)_rng.GetState());
+            LastTickHash = h;
+            _hashRing[_hashRingIndex] = h; _hashTickRing[_hashRingIndex] = State.Tick; _hashRingIndex = (_hashRingIndex + 1) & (HashRingSize-1);
+        }
+        public int GetRecentHashes(System.Collections.Generic.List<(int tick, ulong hash)> buffer, int max=128){ if(buffer==null) return 0; buffer.Clear(); int available=0; for(int i=0;i<HashRingSize;i++){ if(_hashTickRing[i]!=0) available++; } int take = System.Math.Min(available,max); for(int i=0;i<take;i++){ int idx = (_hashRingIndex - 1 - i) & (HashRingSize-1); buffer.Add((_hashTickRing[idx], _hashRing[idx])); } return buffer.Count; }
 
     private void ProcessCommands() {
             while (_cmdQueue.TryDequeue(State.Tick, out var cmd)) {
+                // Basic validation: entity must have spawned already
+                if (!_spawnTick.TryGetValue(cmd.EntityId, out var spawnTick) || spawnTick > State.Tick) continue;
                 switch (cmd.Type) {
                     case CommandType.Move:
                         var idx = FindUnitIndex(cmd.EntityId);
@@ -164,6 +213,7 @@ namespace FrontierAges.Sim {
                         var aIdx = FindUnitIndex(cmd.EntityId);
                         if (aIdx >= 0) {
                             ref var au = ref State.Units[aIdx];
+                            if (!_spawnTick.ContainsKey(cmd.TargetX) || _spawnTick[cmd.TargetX] > State.Tick) break; // target not yet spawned
                             QueueOrder(au.Id, new QueuedOrder { Type = OrderType.Attack, TargetEntityId = cmd.TargetX }); // TargetX repurposed to carry entity id here
                         }
                         break;
@@ -171,6 +221,7 @@ namespace FrontierAges.Sim {
                         var gIdx = FindUnitIndex(cmd.EntityId);
                         if (gIdx >= 0) {
                             ref var gu = ref State.Units[gIdx];
+                            if (!_spawnTick.ContainsKey(cmd.TargetX) || _spawnTick[cmd.TargetX] > State.Tick) break; // resource node not yet spawned
                             QueueOrder(gu.Id, new QueuedOrder { Type = OrderType.Gather, TargetEntityId = cmd.TargetX }); // TargetX carries resource node id
                         }
                         break;
@@ -262,6 +313,7 @@ namespace FrontierAges.Sim {
             if (hp <= 0) hp = State.UnitTypes[typeId].MaxHP;
             State.Units[State.UnitCount] = new Unit { Id = id, TypeId = typeId, FactionId = factionId, X = x, Y = y, HP = hp, CurrentOrderType = OrderType.None };
             _unitIndex[id] = State.UnitCount;
+            _spawnTick[id] = State.Tick;
             State.UnitCount++;
             return id;
         }
@@ -290,6 +342,7 @@ namespace FrontierAges.Sim {
             // Mark occupancy (simple 1 tile) on grid
             int gx = x / TileSize; int gy = y / TileSize;
             if (gx>=0 && gx<GridSize && gy>=0 && gy<GridSize) _grid[gx,gy] = true;
+            _spawnTick[id] = State.Tick;
             return id;
         }
 
@@ -508,6 +561,7 @@ namespace FrontierAges.Sim {
                 State.ResourceNodes = arr;
             }
             State.ResourceNodes[State.ResourceNodeCount++] = new ResourceNode { Id = id, ResourceType = resourceType, X = x, Y = y, AmountRemaining = amount };
+            _spawnTick[id] = State.Tick;
             return id;
         }
 
@@ -518,6 +572,7 @@ namespace FrontierAges.Sim {
             _paths.Remove(id);
             _orderQueues.Remove(id);
             _unitIndex.Remove(id);
+            _spawnTick.Remove(id);
             State.UnitCount--; if (idx != State.UnitCount) { State.Units[idx] = State.Units[State.UnitCount]; _unitIndex[State.Units[idx].Id] = idx; }
         }
 
@@ -539,9 +594,67 @@ namespace FrontierAges.Sim {
             for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=_mapWidth||gy>=_mapHeight) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
             // Track dirties comparing with previous
             _visionDirty.Clear();
-            for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) { if (vis[x,y] != _prevVisibility[x,y]) { _visionDirty.Add((x,y)); _prevVisibility[x,y] = vis[x,y]; } }
+            for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) { if (vis[x,y]==1) State.Explored[x,y]=1; byte prev = _prevVisibility[x,y]; if (vis[x,y] != prev) { _visionDirty.Add((x,y)); _prevVisibility[x,y] = vis[x,y]; } else if (State.Explored[x,y]==1 && prev==0) { // remained unseen but explored newly? not possible
+                }
+            }
         }
         public IReadOnlyList<(int x,int y)> GetVisionDirty() => _visionDirty;
+
+        // --- Research / Tech System (single active per faction) ---
+        public bool StartResearch(short techId, int factionId, int timeMs){ if(factionId<0||factionId>=State.Factions.Length) return false; if(IsTechResearched(factionId, techId)) return false; if(State.FactionResearchTechId[factionId]!=-1) return false; State.FactionResearchTechId[factionId]=techId; State.FactionResearchRemainingMs[factionId]=timeMs; State.FactionResearchTotalMs[factionId]=timeMs; return true; }
+        public bool IsTechResearched(int factionId, short techId){ return (State.FactionTechFlags[factionId] & (1<<techId))!=0; }
+        private void ResearchStep(){ for(int f=0; f<State.FactionResearchTechId.Length; f++){ short tid = State.FactionResearchTechId[f]; if(tid<0) continue; State.FactionResearchRemainingMs[f]-=SimConstants.MsPerTick; if(State.FactionResearchRemainingMs[f]<=0){ State.FactionTechFlags[f] |= (1<<tid); State.FactionResearchTechId[f]=-1; State.FactionResearchRemainingMs[f]=0; State.FactionResearchTotalMs[f]=0; // simple example: tech0 improves worker gather rate
+                        if(tid==0){ for(int ut=0; ut<State.UnitTypeCount; ut++){ var utd = State.UnitTypes[ut]; if((utd.Flags & 1)!=0){ utd.GatherRatePerSec += 1; State.UnitTypes[ut] = utd; } } }
+                    } } }
+
+        // Fast forward utility using replay batches (for editor scrub)
+        public void FastForwardFromBaseline(Snapshot baseline, System.Collections.Generic.List<Command> recorded, int targetRelativeTick){ if(baseline==null||recorded==null){ return; } SnapshotUtil.Apply(State, baseline); // Reset world
+            // Reset internal aux state
+            _orderQueues.Clear(); _paths.Clear(); _spawnTick.Clear(); _unitIndex.Clear(); // baseline apply repopulates spawn ticks via Apply? (captures spawn) else we repopulate when spawning new units
+            _recorded = recorded; _playback=false; _recording=false; _replayBatchesDirty=true; RebuildReplayBatchesIfNeeded(); int currentRelative=0; var batches = GetReplayBatches(); // Iterate batches
+            for(int bi=0; bi<batches.Count; bi++){ var b = batches[bi]; if(b.Tick>targetRelativeTick) break; // advance time to batch tick
+                while(currentRelative < b.Tick && currentRelative < targetRelativeTick){ TickNoReplay(); currentRelative++; }
+                // execute commands in batch
+                for(int ci=0; ci<b.Count; ci++){ var c = _recorded[b.StartIndex+ci]; ExecuteCommandImmediate(c); }
+            }
+            while(currentRelative < targetRelativeTick){ TickNoReplay(); currentRelative++; }
+        }
+        private void TickNoReplay(){ State.Tick++; ProcessCommands(); ProcessUnitOrderQueues(); MovementStep(); UpdateVision(); ProductionStep(); ResearchStep(); CombatStep(); GatherStep(); if (AutoAssignWorkersEnabled) AutoAssignIdleWorkers(); ComputeAndStoreTickHash(); }
+        private void ExecuteCommandImmediate(Command cmd){ // simplified mirror of ProcessCommands logic
+            if(!_spawnTick.TryGetValue(cmd.EntityId, out var spawnTick) || spawnTick>State.Tick) return;
+            switch(cmd.Type){
+                case CommandType.Move: {
+                    var idx = FindUnitIndex(cmd.EntityId);
+                    if(idx>=0){
+                        ref var u = ref State.Units[idx];
+                        u.TargetX=cmd.TargetX; u.TargetY=cmd.TargetY; u.HasMoveTarget=1;
+                        QueueOrder(u.Id,new QueuedOrder{ Type=OrderType.Move, TargetX=cmd.TargetX, TargetY=cmd.TargetY});
+                        ComputePathForUnit(u.Id, cmd.TargetX, cmd.TargetY);
+                    }
+                    break;
+                }
+                case CommandType.Attack: {
+                    var idx = FindUnitIndex(cmd.EntityId);
+                    if(idx>=0){
+                        ref var u = ref State.Units[idx];
+                        if(_spawnTick.ContainsKey(cmd.TargetX) && _spawnTick[cmd.TargetX]<=State.Tick){
+                            QueueOrder(u.Id, new QueuedOrder{ Type=OrderType.Attack, TargetEntityId=cmd.TargetX });
+                        }
+                    }
+                    break;
+                }
+                case CommandType.Gather: {
+                    var idx = FindUnitIndex(cmd.EntityId);
+                    if(idx>=0){
+                        ref var u = ref State.Units[idx];
+                        if(_spawnTick.ContainsKey(cmd.TargetX) && _spawnTick[cmd.TargetX]<=State.Tick){
+                            QueueOrder(u.Id, new QueuedOrder{ Type=OrderType.Gather, TargetEntityId=cmd.TargetX });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
 
         // Replay skeleton
     private List<Command> _recorded = new List<Command>(4096);
@@ -551,9 +664,9 @@ namespace FrontierAges.Sim {
     private int _playbackStartTick;
     private int _recordStartTick;
     private Snapshot _baselineSnapshot; // stored at StartRecording for scrub resets (immutable reference)
-    public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _baselineSnapshot = SnapshotUtil.Capture(State); _recording = true; _playback = false; }
+    public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _baselineSnapshot = SnapshotUtil.Capture(State); _recording = true; _playback = false; MarkReplayDirty(); }
     public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
-    public void StartPlayback(List<Command> cmds) { _recorded = cmds ?? new List<Command>(); _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
+    public void StartPlayback(List<Command> cmds) { _recorded = cmds ?? new List<Command>(); _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; MarkReplayDirty(); }
     public bool IsRecording => _recording; public bool IsPlayback => _playback;
     public IReadOnlyList<Command> GetRecordedCommands() => _recorded;
 
@@ -564,7 +677,7 @@ namespace FrontierAges.Sim {
                 else break; }
             if (_playbackIndex >= _recorded.Count) _playback = false; }
 
-        // Modify ProcessCommands entry point to log & playback injection
+    // Modify ProcessCommands entry point to log & playback injection
         private void ProcessCommandsWrapper() { InjectPlaybackCommands(); ProcessCommands(); }
 
     private void RecordCommand(Command c) {
@@ -572,6 +685,7 @@ namespace FrontierAges.Sim {
             // store relative tick offset in IssueTick for playback
             c.IssueTick = State.Tick - _recordStartTick;
             _recorded.Add(c);
+            MarkReplayDirty();
         }
 
         // Public gameplay APIs that record
@@ -580,8 +694,8 @@ namespace FrontierAges.Sim {
             RecordCommand(cmd); _cmdQueue.Enqueue(cmd);
         }
         public void IssueAttackCommand(int unitId, int targetUnitId) { var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Attack, EntityId = unitId, TargetX = targetUnitId }; RecordCommand(cmd); _cmdQueue.Enqueue(cmd); }
-        public void IssueGatherCommand(int unitId, int resourceNodeId) { var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Gather, EntityId = unitId, TargetX = resourceNodeId }; RecordCommand(cmd); _cmdQueue.Enqueue(cmd); }
-        // Replace Tick to call wrapper (already edited earlier but ensure wrapper used)
+    public void IssueGatherCommand(int unitId, int resourceNodeId) { var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Gather, EntityId = unitId, TargetX = resourceNodeId }; RecordCommand(cmd); _cmdQueue.Enqueue(cmd); }
+    // Tick already uses ProcessCommandsWrapper inside Tick method
     }
 
     // Simple deterministic RNG (xorshift32)
@@ -591,46 +705,49 @@ namespace FrontierAges.Sim {
         public uint NextU32() { uint x = _state; x ^= x << 13; x ^= x >> 17; x ^= x << 5; _state = x; return x; }
         public int Range(int minInclusive, int maxExclusive) { return (int)(NextU32() % (uint)(maxExclusive - minInclusive)) + minInclusive; }
         public float NextFloat01() { return (NextU32() & 0xFFFFFF) / (float)0x1000000; }
+    public uint GetState() => _state;
     }
 
     // Snapshot DTOs for save/load (simplified JSON-friendly)
+    public static class SnapshotVersions { public const string Current = "2"; }
     [System.Serializable] public class Snapshot {
         public int tick;
         public UnitSnap[] units;
         public BuildingSnap[] buildings;
         public FactionSnap[] factions;
         public ResourceNodeSnap[] resourceNodes;
-        // Metadata (optional)
-        public string version;
+        // Metadata
+        public string version; // semantic minor only for now
         public long savedUnix;
         public int unitCount;
         public int buildingCount;
     }
-    [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
-    [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; }
+    [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int spawnTick; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
+    [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; public int spawnTick; }
     [System.Serializable] public class FactionSnap { public int food; public int wood; public int stone; public int metal; }
-    [System.Serializable] public class ResourceNodeSnap { public int id; public short r; public int x; public int y; public int amt; }
+    [System.Serializable] public class ResourceNodeSnap { public int id; public short r; public int x; public int y; public int amt; public int spawnTick; }
 
     public static class SnapshotUtil {
-        // Legacy capture without orders/paths (kept for compatibility)
-        public static Snapshot Capture(WorldState ws) => CaptureInternal(ws, null, null);
-        public static Snapshot Capture(Simulator sim) => CaptureInternal(sim.State, sim._orderQueues, sim._paths);
+        // Capture APIs
+        public static Snapshot Capture(WorldState ws) => CaptureInternal(ws, null, null, null);
+        public static Snapshot Capture(Simulator sim) => CaptureInternal(sim.State, sim._orderQueues, sim._paths, sim._spawnTick);
 
-        private static Snapshot CaptureInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths) {
+        private static Snapshot CaptureInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths, Dictionary<int,int> spawnTicks) {
             var snap = new Snapshot {
                 tick = ws.Tick,
                 units = new UnitSnap[ws.UnitCount],
                 buildings = new BuildingSnap[ws.BuildingCount],
                 factions = new FactionSnap[ws.Factions.Length],
                 resourceNodes = new ResourceNodeSnap[ws.ResourceNodeCount],
-                version = "1",
+                version = SnapshotVersions.Current,
                 savedUnix = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 unitCount = ws.UnitCount,
                 buildingCount = ws.BuildingCount
             };
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
-                var us = new UnitSnap { id = u.Id, type = u.TypeId, faction = u.FactionId, x = u.X, y = u.Y, hp = u.HP, currentOrder = u.CurrentOrderType, currentOrderEntity = u.CurrentOrderEntity };
+                int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(u.Id, out st);
+                var us = new UnitSnap { id = u.Id, type = u.TypeId, faction = u.FactionId, x = u.X, y = u.Y, hp = u.HP, currentOrder = u.CurrentOrderType, currentOrderEntity = u.CurrentOrderEntity, spawnTick = st };
                 if (orderQueues != null && orderQueues.TryGetValue(u.Id, out var q) && q.Count > 0) {
                     int max = q.Count > 16 ? 16 : q.Count; // cap
                     us.orderTypes = new int[max]; us.orderEnts = new int[max]; us.orderXs = new int[max]; us.orderYs = new int[max];
@@ -647,22 +764,25 @@ namespace FrontierAges.Sim {
             }
             for (int i = 0; i < ws.BuildingCount; i++) {
                 ref var b = ref ws.Buildings[i];
-                snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue, fw = b.FootprintW, fh = b.FootprintH };
+                int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(b.Id, out st);
+                snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue, fw = b.FootprintW, fh = b.FootprintH, spawnTick = st };
             }
             for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; }
-            for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining }; }
+            for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(rn.Id, out st); snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining, spawnTick = st }; }
             return snap;
         }
 
-        // Legacy apply (without orders). Prefer Apply(sim,...)
-        public static void Apply(WorldState ws, Snapshot snap) => ApplyInternal(ws, null, null, snap);
-        public static void Apply(Simulator sim, Snapshot snap) => ApplyInternal(sim.State, sim._orderQueues, sim._paths, snap);
+        // Apply APIs
+        public static void Apply(WorldState ws, Snapshot snap) => ApplyInternal(ws, null, null, null, snap);
+        public static void Apply(Simulator sim, Snapshot snap) => ApplyInternal(sim.State, sim._orderQueues, sim._paths, sim._spawnTick, snap);
 
-        private static void ApplyInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths, Snapshot snap) {
+        private static void ApplyInternal(WorldState ws, Dictionary<int,List<QueuedOrder>> orderQueues, Dictionary<int,List<(int x,int y)>> paths, Dictionary<int,int> spawnTicks, Snapshot snap) {
             ws.Tick = snap.tick;
             ws.UnitCount = 0; ws.BuildingCount = 0; ws.ResourceNodeCount = 0;
-            // Clear existing queues/paths
-            orderQueues?.Clear(); paths?.Clear();
+            // Clear existing queues/paths/spawn ticks
+            orderQueues?.Clear(); paths?.Clear(); spawnTicks?.Clear();
+            if (string.IsNullOrEmpty(snap.version)) snap.version = "1"; // legacy default
+            if (snap.version != SnapshotVersions.Current) SnapshotMigrator.Migrate(snap);
             if (snap.units != null) {
                 if (ws.Units.Length < snap.units.Length) ws.Units = new Unit[snap.units.Length];
                 foreach (var us in snap.units) {
@@ -677,12 +797,14 @@ namespace FrontierAges.Sim {
                         for (int i=0;i<us.pathX.Length;i++) plist.Add((us.pathX[i], us.pathY[i]));
                         paths[us.id] = plist;
                     }
+                    if (spawnTicks != null) spawnTicks[us.id] = us.spawnTick;
                 }
             }
             if (snap.buildings != null) {
                 if (ws.Buildings.Length < snap.buildings.Length) ws.Buildings = new Building[snap.buildings.Length];
                 foreach (var bs in snap.buildings) {
                     ws.Buildings[ws.BuildingCount++] = new Building { Id = bs.id, TypeId = bs.type, FactionId = bs.faction, X = bs.x, Y = bs.y, HP = bs.hp, QueueUnitType = (short)bs.queueUnitType, QueueRemainingMs = bs.queueRemaining, HasActiveQueue = bs.hasQueue, QueueTotalMs = bs.queueTotal, FootprintW = bs.fw, FootprintH = bs.fh };
+                    if (spawnTicks != null) spawnTicks[bs.id] = bs.spawnTick;
                 }
             }
             if (snap.factions != null) {
@@ -690,7 +812,23 @@ namespace FrontierAges.Sim {
             }
             if (snap.resourceNodes != null) {
                 if (ws.ResourceNodes.Length < snap.resourceNodes.Length) ws.ResourceNodes = new ResourceNode[snap.resourceNodes.Length];
-                foreach (var rn in snap.resourceNodes) { ws.ResourceNodes[ws.ResourceNodeCount++] = new ResourceNode { Id=rn.id, ResourceType=rn.r, X=rn.x, Y=rn.y, AmountRemaining=rn.amt }; }
+                foreach (var rn in snap.resourceNodes) { ws.ResourceNodes[ws.ResourceNodeCount++] = new ResourceNode { Id=rn.id, ResourceType=rn.r, X=rn.x, Y=rn.y, AmountRemaining=rn.amt }; if (spawnTicks!=null) spawnTicks[rn.id] = rn.spawnTick; }
+            }
+        }
+    }
+    // Migration stub (v1 -> v2 adds spawnTick fields)
+    public static class SnapshotMigrator {
+        public static void Migrate(Snapshot snap) {
+            if (snap.version == SnapshotVersions.Current) return;
+            switch(snap.version) {
+                case "1":
+                    // spawnTick absent; leave default 0
+                    snap.version = SnapshotVersions.Current;
+                    break;
+                default:
+                    // Unknown future version: best-effort accept
+                    snap.version = SnapshotVersions.Current;
+                    break;
             }
         }
     }

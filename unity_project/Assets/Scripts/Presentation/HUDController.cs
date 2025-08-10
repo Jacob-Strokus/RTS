@@ -18,6 +18,8 @@ namespace FrontierAges.Presentation {
         public Button StopRecBtn;
         public Button PlayBtn;
         public Text ReplayStateText; public Button SaveDiskBtn; public Button LoadDiskBtn;
+    public Text HashText; // new: shows last tick hash
+    public Text ResearchText; // new: shows current research progress faction 0
         private Simulator _sim;
         private SelectionManager _sel;
         private float _attackFlashTimer;
@@ -102,6 +104,11 @@ namespace FrontierAges.Presentation {
                 else AttackModeText.enabled = false;
             }
             if (ReplayStateText && _sim!=null){ string s = _sim.IsRecording?"REC":(_sim.IsPlayback?"PLAY":""); ReplayStateText.text = s; ReplayStateText.enabled = s!=""; }
+            if (HashText){ HashText.text = $"Hash: {_sim.LastTickHash:X16}"; }
+            if (ResearchText){
+                int f=0; var ws=_sim.State; short tid = ws.FactionResearchTechId[f]; if(tid>=0){ int rem = ws.FactionResearchRemainingMs[f]; int total = ws.FactionResearchTotalMs[f]; float prog = total>0? 1f - (rem/(float)total):0f; ResearchText.text = $"Research T{tid} {(prog*100f):F0}%"; }
+                else ResearchText.text = "Research: -";
+            }
         }
         private int FindUnitIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.UnitCount;i++) if (ws.Units[i].Id==id) return i; return -1; }
         private int FindBuildingIndex(int id) { var ws=_sim.State; for (int i=0;i<ws.BuildingCount;i++) if (ws.Buildings[i].Id==id) return i; return -1; }

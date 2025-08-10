@@ -9,6 +9,7 @@ namespace FrontierAges.Presentation {
         public float TileSize = 1f;
         public Color HiddenColor = new Color(0,0,0,0.6f);
         public Color VisibleColor = new Color(0,0,0,0f);
+    public Color ExploredColor = new Color(0,0,0,0.35f); // previously seen but not currently visible
     private Mesh _mesh;
     private Color[] _colors;
     private int _w=128,_h=128;
@@ -36,6 +37,6 @@ namespace FrontierAges.Presentation {
             }
             _mesh.SetVertices(verts); _mesh.SetTriangles(tris,0); var meshColors = new System.Collections.Generic.List<Color>(verts.Count); for(int i=0;i<_w*_h;i++){ var c=_colors[i]; meshColors.Add(c); meshColors.Add(c); meshColors.Add(c); meshColors.Add(c);} _mesh.SetColors(meshColors); _mesh.RecalculateBounds();
         }
-    void LateUpdate(){ if (Sim==null) return; if (Sim.State.Visibility==null) return; var dirty = Sim.GetVisionDirty(); if (dirty==null||dirty.Count==0) return; var meshColors = _mesh.colors; foreach (var (x,y) in dirty){ if (x>=_w||y>=_h) continue; int tileIndex=y*_w+x; int vi=tileIndex*4; if (vi+3>=meshColors.Length) continue; byte v=Sim.State.Visibility[x,y]; Color c=v==1? VisibleColor:HiddenColor; meshColors[vi]=c; meshColors[vi+1]=c; meshColors[vi+2]=c; meshColors[vi+3]=c; } _mesh.colors=meshColors; }
+    void LateUpdate(){ if (Sim==null) return; if (Sim.State.Visibility==null||Sim.State.Explored==null) return; var dirty = Sim.GetVisionDirty(); if (dirty==null||dirty.Count==0) return; var meshColors = _mesh.colors; foreach (var (x,y) in dirty){ if (x>=_w||y>=_h) continue; int tileIndex=y*_w+x; int vi=tileIndex*4; if (vi+3>=meshColors.Length) continue; byte v=Sim.State.Visibility[x,y]; bool explored = Sim.State.Explored[x,y]==1; Color c; if(v==1) c=VisibleColor; else c = explored? ExploredColor: HiddenColor; meshColors[vi]=c; meshColors[vi+1]=c; meshColors[vi+2]=c; meshColors[vi+3]=c; } _mesh.colors=meshColors; }
     }
 }
