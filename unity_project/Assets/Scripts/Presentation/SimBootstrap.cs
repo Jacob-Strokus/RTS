@@ -8,7 +8,7 @@ namespace FrontierAges.Presentation {
         public GameObject UnitPrefab; // simple capsule prefab
     public GameObject BuildingGhostPrefab; // simple cube for placement preview
         private Simulator _sim;
-        private float _accum;
+    private float _accum;
         private CommandQueue _queue;
         private System.Collections.Generic.List<int> _unitIds = new System.Collections.Generic.List<int>();
     private SelectionManager _selection;
@@ -57,7 +57,13 @@ namespace FrontierAges.Presentation {
             _accum += Time.deltaTime * 1000f; // ms
             while (_accum >= SimConstants.MsPerTick) {
                 _accum -= SimConstants.MsPerTick;
+                _tickSw.Restart();
                 _sim.Tick();
+                _tickSw.Stop();
+                // Store last duration (micro approx) and running avg (EWMA)
+                long micros = (long)(_tickSw.Elapsed.TotalMilliseconds * 1000.0);
+                _sim.State.LastTickDurationMsTimes1000 = micros;
+                _sim.State.AvgTickDurationMicro = (_sim.State.AvgTickDurationMicro==0) ? micros : ( (_sim.State.AvgTickDurationMicro*9 + micros)/10 );
             }
             // Right click: group move with simple square formation
             if (Input.GetMouseButtonDown(1)) {
@@ -108,7 +114,7 @@ namespace FrontierAges.Presentation {
             // H key: toggle auto-assign workers
             if (Input.GetKeyDown(KeyCode.H)) {
                 _autoAssignWorkers = !_autoAssignWorkers;
-                // could set a flag in simulator later; for now we assume simulator always on; toggling would require an exposed property
+                _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
             }
         }
 
@@ -146,14 +152,19 @@ namespace FrontierAges.Presentation {
                 if (_ghost) _ghost.transform.position = pos;
                 int worldX = (int)(pos.x * SimConstants.PositionScale);
                 int worldY = (int)(pos.z * SimConstants.PositionScale);
-                bool valid = _sim.CanPlaceBuildingRect(worldX, worldY, 2, 2); // placeholder 2x2 footprint
+                // TODO: look up building footprint from imported data (first building in registry if available)
+                int w=2,h=2; // fallback
+                if (FrontierAges.Sim.DataRegistry.Buildings.Length>0 && FrontierAges.Sim.DataRegistry.Buildings[0].footprint!=null) {
+                    w = FrontierAges.Sim.DataRegistry.Buildings[0].footprint.w; h = FrontierAges.Sim.DataRegistry.Buildings[0].footprint.h;
+                }
+                bool valid = _sim.CanPlaceBuildingRect(worldX, worldY, w, h);
                 if (_ghost) {
                     foreach (var r in _ghost.GetComponentsInChildren<Renderer>()) {
                         r.material.color = valid ? new Color(0,1,0,0.4f) : new Color(1,0,0,0.4f);
                     }
                 }
                 if (valid && Input.GetMouseButtonDown(0)) {
-                    _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, 2, 2, 0);
+                    _sim.PlaceBuildingWithFootprint(0, 0, worldX, worldY, w, h, 0);
                     _placingBuilding = false; if (_ghost) Destroy(_ghost);
                 }
                 if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
