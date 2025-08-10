@@ -535,18 +535,20 @@ namespace FrontierAges.Sim {
         }
 
         // Replay skeleton
-        private List<Command> _recorded = new List<Command>(4096);
-        private bool _recording;
-        private bool _playback;
-        private int _playbackIndex;
-        private int _playbackStartTick;
-        public void StartRecording() { _recorded.Clear(); _recording = true; _playback = false; }
-        public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
-        public void StartPlayback(List<Command> cmds) { _recorded = cmds; _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
-        public bool IsRecording => _recording; public bool IsPlayback => _playback;
+    private List<Command> _recorded = new List<Command>(4096);
+    private bool _recording;
+    private bool _playback;
+    private int _playbackIndex;
+    private int _playbackStartTick;
+    private int _recordStartTick;
+    public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _recording = true; _playback = false; }
+    public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
+    public void StartPlayback(List<Command> cmds) { _recorded = cmds ?? new List<Command>(); _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
+    public bool IsRecording => _recording; public bool IsPlayback => _playback;
+    public IReadOnlyList<Command> GetRecordedCommands() => _recorded;
 
         // Inject playback commands each tick before processing live ones
-        private void InjectPlaybackCommands() {
+    private void InjectPlaybackCommands() {
             if (!_playback) return; while (_playbackIndex < _recorded.Count) { var c = _recorded[_playbackIndex]; int relative = c.IssueTick; // use original tick delta
                 if (State.Tick - _playbackStartTick >= relative) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = c.Type, EntityId = c.EntityId, TargetX = c.TargetX, TargetY = c.TargetY }); _playbackIndex++; }
                 else break; }
@@ -554,6 +556,21 @@ namespace FrontierAges.Sim {
 
         // Modify ProcessCommands entry point to log & playback injection
         private void ProcessCommandsWrapper() { InjectPlaybackCommands(); ProcessCommands(); }
+
+        private void RecordCommand(Command c) {
+            if (!_recording) return;
+            // store relative tick offset in IssueTick for playback
+            c.IssueTick = State.Tick - _recordStartTick;
+            _recorded.Add(c);
+        }
+
+        // Public gameplay APIs that record
+        public void IssueMoveCommand(int unitId, int targetX, int targetY) {
+            var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Move, EntityId = unitId, TargetX = targetX, TargetY = targetY };
+            RecordCommand(cmd); _cmdQueue.Enqueue(cmd);
+        }
+        public void IssueAttackCommand(int unitId, int targetUnitId) { var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Attack, EntityId = unitId, TargetX = targetUnitId }; RecordCommand(cmd); _cmdQueue.Enqueue(cmd); }
+        public void IssueGatherCommand(int unitId, int resourceNodeId) { var cmd = new Command { IssueTick = State.Tick, Type = CommandType.Gather, EntityId = unitId, TargetX = resourceNodeId }; RecordCommand(cmd); _cmdQueue.Enqueue(cmd); }
         // Replace Tick to call wrapper (already edited earlier but ensure wrapper used)
     }
 

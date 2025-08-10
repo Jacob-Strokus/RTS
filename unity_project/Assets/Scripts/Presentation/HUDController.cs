@@ -12,12 +12,24 @@ namespace FrontierAges.Presentation {
         public Text SelectionText; // new: show first selected entity HP / queue
         public Text AutoAssignText; // status of auto-assign workers
         public Text AttackModeText; // indicator when pressing A (transient)
+        public Button SaveBtn;
+        public Button LoadBtn;
+        public Button RecBtn;
+        public Button StopRecBtn;
+        public Button PlayBtn;
         private Simulator _sim;
         private SelectionManager _sel;
         private float _attackFlashTimer;
+        private SimBootstrap _boot;
 
         void Start() {
             _sim = FindObjectOfType<SimBootstrap>()?.GetSimulator();
+            _boot = FindObjectOfType<SimBootstrap>();
+            if (SaveBtn) SaveBtn.onClick.AddListener(() => _boot.UiSaveSnapshot());
+            if (LoadBtn) LoadBtn.onClick.AddListener(() => _boot.UiLoadSnapshot());
+            if (RecBtn) RecBtn.onClick.AddListener(() => _boot.UiStartRecording());
+            if (StopRecBtn) StopRecBtn.onClick.AddListener(() => _boot.UiStopRecording());
+            if (PlayBtn) PlayBtn.onClick.AddListener(() => _boot.UiPlayRecording());
         }
 
         void Update() {

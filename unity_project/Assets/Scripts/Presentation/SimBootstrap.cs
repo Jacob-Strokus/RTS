@@ -186,6 +186,8 @@ namespace FrontierAges.Presentation {
                     bv.Init(bd.Id, _sim, w, h);
                 }
             }
+            // After spawning units attach health bars
+            if (WorldSpaceCanvas && HealthBarPrefab){ foreach(var uv in FindObjectsOfType<UnitView>()){ uv.AttachHealthBar(WorldSpaceCanvas, HealthBarPrefab); } }
         }
 
         private int FindUnitIndex(int id) {
@@ -208,7 +210,7 @@ namespace FrontierAges.Presentation {
                 int row = i / cols; int col = i % cols;
                 int ox = (col - cols/2) * spacing;
                 int oy = (row - cols/2) * spacing;
-                _queue.Enqueue(new Command { IssueTick = _sim.State.Tick, Type = CommandType.Move, EntityId = ids[i], TargetX = baseX + ox, TargetY = baseY + oy });
+                _sim.IssueMoveCommand(ids[i], baseX + ox, baseY + oy);
             }
         }
 
