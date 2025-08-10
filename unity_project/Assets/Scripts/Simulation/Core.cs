@@ -39,6 +39,8 @@ namespace FrontierAges.Sim {
     public int CarryCapacity; // max carried units
     public byte Flags; // bit0 = worker
     public byte PopCost; // population cost (default 1)
+    // Production economy (placeholder; later derive from JSON)
+    public int FoodCost; public int WoodCost; public int StoneCost; public int MetalCost; public int TrainTimeMs;
     }
 
     public class WorldState {
@@ -83,6 +85,7 @@ namespace FrontierAges.Sim {
     public byte IsUnderConstruction; // 1 if not finished
     public int BuildTotalMs; // planned total build time
     public int BuildRemainingMs; // remaining until completion
+    public int RallyX; public int RallyY; public byte HasRally;
     }
 
     public struct Faction {
@@ -414,58 +417,29 @@ namespace FrontierAges.Sim {
             return id;
         }
 
+        // --- Production Multi-Queue ---
+        private const int MaxQueuePerBuilding = 5; // active + 4 pending
+        private readonly System.Collections.Generic.Dictionary<int,System.Collections.Generic.List<short>> _prodTail = new System.Collections.Generic.Dictionary<int,System.Collections.Generic.List<short>>();
+        private bool CanAffordUnit(int factionId, short unitType){ if(unitType<0||unitType>=State.UnitTypeCount) return false; ref var fac = ref State.Factions[factionId]; var utd = State.UnitTypes[unitType]; return fac.Food>=utd.FoodCost && fac.Wood>=utd.WoodCost && fac.Stone>=utd.StoneCost && fac.Metal>=utd.MetalCost; }
+        private void DeductUnitCost(int factionId, short unitType){ if(unitType<0||unitType>=State.UnitTypeCount) return; ref var fac = ref State.Factions[factionId]; var utd = State.UnitTypes[unitType]; fac.Food-=utd.FoodCost; fac.Wood-=utd.WoodCost; fac.Stone-=utd.StoneCost; fac.Metal-=utd.MetalCost; }
+        private void RefundUnitCost(int factionId, short unitType){ if(unitType<0||unitType>=State.UnitTypeCount) return; ref var fac = ref State.Factions[factionId]; var utd = State.UnitTypes[unitType]; fac.Food+=utd.FoodCost; fac.Wood+=utd.WoodCost; fac.Stone+=utd.StoneCost; fac.Metal+=utd.MetalCost; }
+        public bool CancelProduction(int buildingId, int queueIndex){ int idx=FindBuildingIndex(buildingId); if(idx<0) return false; ref var b = ref State.Buildings[idx]; if(queueIndex==0){ if(b.HasActiveQueue==0) return false; RefundUnitCost(b.FactionId,b.QueueUnitType); b.HasActiveQueue=0; b.QueueUnitType=-1; b.QueueRemainingMs=0; b.QueueTotalMs=0; PromoteNextQueued(ref b); State.Buildings[idx]=b; return true; } if(!_prodTail.TryGetValue(b.Id,out var list)) return false; int tailIdx = queueIndex-1; if(tailIdx<0||tailIdx>=list.Count) return false; var ut = list[tailIdx]; RefundUnitCost(b.FactionId, ut); list.RemoveAt(tailIdx); return true; }
+        public bool SetRallyPoint(int buildingId, int wx, int wy){ int idx=FindBuildingIndex(buildingId); if(idx<0) return false; ref var b = ref State.Buildings[idx]; b.RallyX=wx; b.RallyY=wy; b.HasRally=1; State.Buildings[idx]=b; return true; }
+        public bool ClearRallyPoint(int buildingId){ int idx=FindBuildingIndex(buildingId); if(idx<0) return false; ref var b = ref State.Buildings[idx]; b.HasRally=0; State.Buildings[idx]=b; return true; }
         public void EnqueueTrain(int buildingId, short unitType, int trainTimeMs) {
-            int idx = FindBuildingIndex(buildingId);
-            if (idx < 0) return;
-            ref var b = ref State.Buildings[idx];
-            if (b.HasActiveQueue == 1) return; // single slot for now
-                if (b.IsUnderConstruction==1) return; // cannot train yet
-                // Population check
-                byte popCost = State.UnitTypes[unitType].PopCost==0?(byte)1:State.UnitTypes[unitType].PopCost;
-                ref var fac = ref State.Factions[b.FactionId];
-                if (fac.PopCap>0 && fac.Pop + popCost > fac.PopCap) return; // not enough housing
-            b.QueueUnitType = unitType;
-            b.QueueRemainingMs = trainTimeMs;
-            b.HasActiveQueue = 1;
-            b.QueueTotalMs = trainTimeMs;
+            int idx = FindBuildingIndex(buildingId); if (idx < 0) return; ref var b = ref State.Buildings[idx]; if (b.IsUnderConstruction==1) return; if(unitType<0||unitType>=State.UnitTypeCount) return; byte popCost = State.UnitTypes[unitType].PopCost==0?(byte)1:State.UnitTypes[unitType].PopCost; ref var fac = ref State.Factions[b.FactionId]; if(fac.PopCap>0 && fac.Pop + popCost > fac.PopCap) return; if(!CanAffordUnit(b.FactionId, unitType)) return; int existing = (b.HasActiveQueue==1?1:0); if(_prodTail.TryGetValue(b.Id,out var list)) existing += list.Count; if(existing>=MaxQueuePerBuilding) return; DeductUnitCost(b.FactionId, unitType); if(b.HasActiveQueue==0){ b.QueueUnitType=unitType; int t = trainTimeMs>0?trainTimeMs: (State.UnitTypes[unitType].TrainTimeMs>0? State.UnitTypes[unitType].TrainTimeMs:5000); b.QueueRemainingMs=t; b.QueueTotalMs=t; b.HasActiveQueue=1; State.Buildings[idx]=b; } else { if(list==null){ list=new System.Collections.Generic.List<short>(); _prodTail[b.Id]=list; } list.Add(unitType); }
         }
-
-    private void ProductionStep() {
-            for (int i = 0; i < State.BuildingCount; i++) {
-                ref var b = ref State.Buildings[i];
-                if (b.IsUnderConstruction==1) {
-                    b.BuildRemainingMs -= SimConstants.MsPerTick;
-                    // Use data registry for maxHP & pop provide
-                    int maxHP = 1000; int providesPop = 0;
-                    if (b.TypeId >=0 && b.TypeId < DataRegistry.Buildings.Length) {
-                        var bj = DataRegistry.Buildings[b.TypeId];
-                        if (bj != null) { if (bj.maxHP>0) maxHP = bj.maxHP; providesPop = bj.providesPopulation; }
-                    }
-                    int builtMs = b.BuildTotalMs - b.BuildRemainingMs; if (builtMs<0) builtMs=0; if (b.BuildTotalMs<1) b.BuildTotalMs=1;
-                    b.HP = (int)((long)maxHP * builtMs / b.BuildTotalMs); if (b.HP<1) b.HP=1;
-                    if (b.BuildRemainingMs <= 0) { b.IsUnderConstruction=0; b.BuildRemainingMs=0; b.HP = maxHP; // grant population cap
-                        if (providesPop>0) { ref var fac2 = ref State.Factions[b.FactionId]; fac2.PopCap += providesPop; }
-                    }
-                    continue;
-                }
-                if (b.HasActiveQueue == 0) continue;
-                b.QueueRemainingMs -= SimConstants.MsPerTick;
-                if (b.QueueRemainingMs <= 0) {
-                    // Re-check pop cap before spawning
-                    if (b.QueueUnitType>=0 && b.QueueUnitType<State.UnitTypeCount) {
-                        byte popCost = State.UnitTypes[b.QueueUnitType].PopCost==0?(byte)1:State.UnitTypes[b.QueueUnitType].PopCost;
-                        ref var fac3 = ref State.Factions[b.FactionId];
-                        if (fac3.PopCap==0 || fac3.Pop + popCost <= fac3.PopCap) {
-                    int spawnX = b.X + _rng.Range(-2000, 2000);
-                    int spawnY = b.Y + _rng.Range(-2000, 2000);
-                            SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0);
-                        }
-                    }
-                    b.HasActiveQueue = 0;
-                    b.QueueUnitType = -1;
-            b.QueueTotalMs = 0;
-                }
+        private void PromoteNextQueued(ref Building b){ if(_prodTail.TryGetValue(b.Id,out var list) && list.Count>0){ var ut = list[0]; list.RemoveAt(0); b.QueueUnitType=ut; var utd = State.UnitTypes[ut]; int t = utd.TrainTimeMs>0? utd.TrainTimeMs:5000; b.QueueRemainingMs=t; b.QueueTotalMs=t; b.HasActiveQueue=1; } }
+        private void ProductionStep() {
+            for (int i=0;i<State.BuildingCount;i++) { ref var b = ref State.Buildings[i]; if (b.IsUnderConstruction==1) { b.BuildRemainingMs -= SimConstants.MsPerTick; int maxHP=1000; int providesPop=0; if(b.TypeId>=0 && b.TypeId < DataRegistry.Buildings.Length){ var bj=DataRegistry.Buildings[b.TypeId]; if(bj!=null){ if(bj.maxHP>0) maxHP=bj.maxHP; providesPop=bj.providesPopulation; } } int builtMs=b.BuildTotalMs - b.BuildRemainingMs; if(builtMs<0) builtMs=0; if(b.BuildTotalMs<1) b.BuildTotalMs=1; b.HP = (int)((long)maxHP * builtMs / b.BuildTotalMs); if(b.HP<1) b.HP=1; if(b.BuildRemainingMs<=0){ b.IsUnderConstruction=0; b.BuildRemainingMs=0; b.HP=maxHP; if(providesPop>0){ ref var f2 = ref State.Factions[b.FactionId]; f2.PopCap += providesPop; } } State.Buildings[i]=b; continue; }
+                if(b.HasActiveQueue==0){ PromoteNextQueued(ref b); State.Buildings[i]=b; if(b.HasActiveQueue==0) continue; }
+                b.QueueRemainingMs -= SimConstants.MsPerTick; if(b.QueueRemainingMs<=0){ if(b.QueueUnitType>=0 && b.QueueUnitType<State.UnitTypeCount){ byte popCost = State.UnitTypes[b.QueueUnitType].PopCost==0?(byte)1:State.UnitTypes[b.QueueUnitType].PopCost; ref var fac3 = ref State.Factions[b.FactionId]; if(fac3.PopCap==0 || fac3.Pop + popCost <= fac3.PopCap){ int spawnX = b.X + _rng.Range(-2000,2000); int spawnY = b.Y + _rng.Range(-2000,2000); SpawnUnit((short)b.QueueUnitType, b.FactionId, spawnX, spawnY, 0); if(b.HasRally==1){ IssueMoveImmediateToNewest(spawnX, spawnY, b.RallyX, b.RallyY); } } }
+                    b.HasActiveQueue=0; b.QueueUnitType=-1; b.QueueRemainingMs=0; b.QueueTotalMs=0; PromoteNextQueued(ref b); State.Buildings[i]=b; }
             }
+        }
+        private void IssueMoveImmediateToNewest(int nearX, int nearY, int targetX, int targetY){ // naive: find unit closest to spawn coords without a move target yet
+            int best=-1; long bestD=long.MaxValue; for(int i=0;i<State.UnitCount;i++){ ref var u = ref State.Units[i]; if(u.HasMoveTarget==1) continue; long dx=u.X-nearX; long dy=u.Y-nearY; long d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best=i; } }
+            if(best>=0){ ref var u = ref State.Units[best]; u.TargetX=targetX; u.TargetY=targetY; u.HasMoveTarget=1; ComputePathForUnit(u.Id, targetX, targetY); }
         }
 
         private int FindBuildingIndex(int id) {
