@@ -2,6 +2,7 @@
 using UnityEngine;
 using FrontierAges.Sim;
 using System.IO;
+using System.Linq;
 
 namespace FrontierAges.Presentation {
     public class SimBootstrap : MonoBehaviour {
@@ -288,15 +289,17 @@ namespace FrontierAges.Presentation {
         public UnityEngine.UI.Slider ReplayScrubSlider; // assign in canvas
         private bool _scrubInProgress;
         private System.Collections.Generic.List<CommandData> _cachedReplay;
+        public RectTransform SnapshotListContainer; public GameObject SnapshotListItemPrefab; // UI list
+        private Snapshot _recordBaseline; // local cached baseline for scrub
         public void OnReplayScrubChanged(float v){ if(!_sim.IsPlayback && _cachedReplay!=null && _cachedReplay.Count>0){ int targetTick = Mathf.RoundToInt(v * (_cachedReplay[_cachedReplay.Count-1].IssueTick)); JumpToReplayTick(targetTick); } }
-        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null) return; // Capture base snapshot (tick 0) assumed = first snapshot when recording started; for prototype just reload saved snapshot if available
-            // Approach: reset sim via last saved snapshot then apply commands up to relativeTick
-            var baseSnap = SnapshotUtil.Capture(_sim); // fallback minimal baseline (would store at recording start in future)
-            SnapshotUtil.Apply(_sim, baseSnap); // ensure deterministic baseline
-            foreach(var cmd in _cachedReplay){ if(cmd.IssueTick > relativeTick) break; // fast-forward by re-enqueueing immediately
-                switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; }
-                // tick sim forward up to next command tick delta (simplified)
-            }
+        public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json").OrderByDescending(f=>f).Take(30); foreach(var f in files){ var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = Path.GetFileNameWithoutExtension(f); if(btn) btn.onClick.AddListener(()=> { var json=File.ReadAllText(f); var snap=JsonUtility.FromJson<Snapshot>(json); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }); } }
+        public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
+        private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; SnapshotUtil.Apply(_sim.State, _recordBaseline); // reset to baseline
+            // Fast-forward by replaying commands up to target tick deterministically
+            foreach(var cmd in _cachedReplay){ if(cmd.IssueTick > relativeTick) break; switch(cmd.Type){ case CommandType.Move: _sim.IssueMoveCommand(cmd.EntityId, cmd.TargetX, cmd.TargetY); break; case CommandType.Attack: _sim.IssueAttackCommand(cmd.EntityId, cmd.TargetX); break; case CommandType.Gather: _sim.IssueGatherCommand(cmd.EntityId, cmd.TargetX); break; } }
+            // Optionally tick simulation to a consistent tick equal to baselineTick + relativeTick
+            int targetAbsTick = _recordBaseline.tick + relativeTick; while(_sim.State.Tick < targetAbsTick){ _sim.Tick(); }
+            RebuildViews();
         }
     }
 }

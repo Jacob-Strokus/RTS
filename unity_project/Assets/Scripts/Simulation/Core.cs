@@ -550,7 +550,8 @@ namespace FrontierAges.Sim {
     private int _playbackIndex;
     private int _playbackStartTick;
     private int _recordStartTick;
-    public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _recording = true; _playback = false; }
+    private Snapshot _baselineSnapshot; // stored at StartRecording for scrub resets
+    public void StartRecording() { _recorded.Clear(); _recordStartTick = State.Tick; _baselineSnapshot = SnapshotUtil.Capture(State); _recording = true; _playback = false; }
     public List<Command> StopRecording() { _recording = false; return new List<Command>(_recorded); }
     public void StartPlayback(List<Command> cmds) { _recorded = cmds ?? new List<Command>(); _playback = true; _recording = false; _playbackIndex = 0; _playbackStartTick = State.Tick; }
     public bool IsRecording => _recording; public bool IsPlayback => _playback;
