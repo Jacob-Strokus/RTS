@@ -80,6 +80,8 @@ namespace FrontierAges.Presentation {
                 _sim.Tick();
                 _tickSw.Stop();
                 SyncProjectiles();
+                // Drain damage events and spawn floating text
+                if(FloatingTextManager){ _damageBuffer ??= new System.Collections.Generic.List<FrontierAges.Sim.DamageEvent>(128); if(_sim.DrainDamageEvents(_damageBuffer)>0){ foreach(var de in _damageBuffer){ FloatingTextManager.Spawn(de); } } }
                 // Store last duration (micro approx) and running avg (EWMA)
                 long micros = (long)(_tickSw.Elapsed.TotalMilliseconds * 1000.0);
                 _sim.State.LastTickDurationMsTimes1000 = micros;
@@ -201,6 +203,10 @@ namespace FrontierAges.Presentation {
                 _sim.StartResearch(0, 0);
             }
         }
+
+    // Floating combat text support
+    public FloatingCombatTextManager FloatingTextManager;
+    private System.Collections.Generic.List<FrontierAges.Sim.DamageEvent> _damageBuffer;
 
         private void TryIssueAttackFromSelection() {
             if (_selection == null) return; if (_selection.Selected.Count == 0) return;

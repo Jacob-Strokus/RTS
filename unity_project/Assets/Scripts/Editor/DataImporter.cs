@@ -83,9 +83,15 @@ namespace FrontierAges.EditorTools {
 
         private static void BuildRuntimeUnitTypeData(){ var sim = Object.FindObjectOfType<FrontierAges.Presentation.SimBootstrap>()?.GetSimulator(); if(sim==null){ Debug.LogWarning("Simulator not found; cannot build runtime unit types yet."); return; }
             foreach(var u in DataRegistry.Units){ FrontierAges.Sim.UnitTypeData utd = new FrontierAges.Sim.UnitTypeData(); utd.MoveSpeedMilliPerSec = (int)u.moveSpeed; utd.MaxHP = u.maxHP; utd.GatherRatePerSec = 0; utd.CarryCapacity = u.carryCapacity>0? u.carryCapacity:10; utd.Flags=0; utd.PopCost = (byte)(u.population>0? u.population:1);
-                if(u.gatherRates!=null){ // mark as worker if any gather rate >0
-                    float sum = u.gatherRates.wood + u.gatherRates.food + u.gatherRates.stone + u.gatherRates.metal;
-                    if(sum>0.0001f){ utd.Flags |= 1; utd.GatherRatePerSec = (int)( (u.gatherRates.food+u.gatherRates.wood+u.gatherRates.stone+u.gatherRates.metal)/4f * 1000f); }
+                if(u.gatherRates!=null){ // mark as worker if any gather rate >0; capture per-resource integer rates
+                    // Keep original average for legacy fallback
+                    float[] rates = { u.gatherRates.food, u.gatherRates.wood, u.gatherRates.stone, u.gatherRates.metal };
+                    float sum = 0f; int nonZero=0; foreach(var r in rates){ if(r>0){ sum+=r; nonZero++; } }
+                    if(sum>0f){ float avg = sum / nonZero; utd.Flags |= 1; utd.GatherRatePerSec = Mathf.Max(1, Mathf.RoundToInt(avg)); }
+                    utd.GatherFoodPerSec = u.gatherRates.food>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.food)) : 0;
+                    utd.GatherWoodPerSec = u.gatherRates.wood>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.wood)) : 0;
+                    utd.GatherStonePerSec = u.gatherRates.stone>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.stone)) : 0;
+                    utd.GatherMetalPerSec = u.gatherRates.metal>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.metal)) : 0;
                 }
                 if(u.cost!=null){ utd.FoodCost=u.cost.food; utd.WoodCost=u.cost.wood; utd.StoneCost=u.cost.stone; utd.MetalCost=u.cost.metal; }
                 if(u.trainTimeMs>0) utd.TrainTimeMs = u.trainTimeMs;
