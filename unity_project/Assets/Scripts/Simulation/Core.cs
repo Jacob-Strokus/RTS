@@ -33,9 +33,26 @@ namespace FrontierAges.Sim {
     public struct UnitTypeData {
         public int MoveSpeedMilliPerSec; // e.g., 2500 = 2.5 units/sec
         public int MaxHP;
-        public int AttackRange; // milli-units
-        public int AttackDamage;
+        // Attack runtime resolved from attack profile
+        public int AttackRange; // milli-units (from profile)
+        public int AttackDamageBase;
         public int AttackCooldownMs;
+        public int AttackWindupMs;
+        public int AttackImpactDelayMs; // if >0 and no projectile, delay damage application
+        public byte HasProjectile; // 1 if projectile profile present
+        public int ProjectileSpeed;
+        public int ProjectileLifetimeMs;
+        public byte ProjectileHoming; // 1 = homing
+        // Armor values per damage type
+        public int ArmorMelee;
+        public int ArmorPierce;
+        public int ArmorSiege;
+        public int ArmorMagic;
+    // Damage type multipliers (offense) resolved from profile
+    public float DTMelee;
+    public float DTPierce;
+    public float DTSiege;
+    public float DTMagic;
     public int GatherRatePerSec; // integer units per second (scaled ms)
     public int CarryCapacity; // max carried units
     public byte Flags; // bit0 = worker
@@ -115,6 +132,8 @@ namespace FrontierAges.Sim {
     public enum CommandType : byte { None = 0, Move = 1, Attack = 2, Gather = 3, AttackMove = 4 }
 
     public enum DamageType : byte { Melee=0, Pierce=1, Siege=2, Magic=3 }
+
+    public struct AttackProfile { public int Range; public int CooldownMs; public int Damage; public int WindupMs; public int ImpactDelayMs; public byte HasProjectile; public int ProjSpeed; public int ProjLifetimeMs; public byte ProjHoming; public float DT_Melee; public float DT_Pierce; public float DT_Siege; public float DT_Magic; }
 
     public struct Projectile { public int Id; public int X; public int Y; public int TargetUnitId; public short AttackSourceTypeId; public int FactionId; public int Speed; public int Damage; public DamageType DType; public int LifetimeMs; }
 
@@ -470,29 +489,48 @@ namespace FrontierAges.Sim {
         }
 
         private void CombatStep() {
-            // Resolve windups / cooldowns / acquisition; spawn projectiles or apply direct damage
             for(int i=0;i<State.UnitCount;i++){
-                ref var u = ref State.Units[i]; var utd = State.UnitTypes[u.TypeId]; if(utd.AttackDamage<=0) continue; if(u.AttackCooldownMs>0){ u.AttackCooldownMs-=SimConstants.MsPerTick; if(u.AttackCooldownMs<0) u.AttackCooldownMs=0; }
-                if(u.AttackWindupRemainingMs>0){ u.AttackWindupRemainingMs-=SimConstants.MsPerTick; if(u.AttackWindupRemainingMs<=0){ // release
-                        PerformAttackResolution(ref u, utd); u.AttackCooldownMs = utd.AttackCooldownMs; }
+                ref var u = ref State.Units[i]; ref var utd = ref State.UnitTypes[u.TypeId]; if(utd.AttackDamageBase<=0) continue;
+                if(u.AttackCooldownMs>0){ u.AttackCooldownMs-=SimConstants.MsPerTick; if(u.AttackCooldownMs<0) u.AttackCooldownMs=0; }
+                if(u.AttackWindupRemainingMs>0){ u.AttackWindupRemainingMs-=SimConstants.MsPerTick; if(u.AttackWindupRemainingMs<=0){ // windup finished -> schedule impact or spawn projectile
+                        ResolveAttackLaunch(ref u, ref utd); }
                     continue; }
-                // Decide if we should begin an attack
                 int targetIdx = AcquireTargetFor(ref u, utd.AttackRange);
-                if(targetIdx>=0 && u.AttackCooldownMs==0){ // begin windup (simple: no windup data yet, use fixed 0) -> can extend later
-                    int windup = 0; u.AttackTargetId = State.Units[targetIdx].Id; u.AttackWindupRemainingMs = windup; if(windup==0){ PerformAttackResolution(ref u, utd); u.AttackCooldownMs = utd.AttackCooldownMs; }
-                }
+                if(targetIdx>=0 && u.AttackCooldownMs==0){ u.AttackTargetId = State.Units[targetIdx].Id; u.AttackWindupRemainingMs = utd.AttackWindupMs; if(utd.AttackWindupMs==0) ResolveAttackLaunch(ref u, ref utd); }
             }
             UpdateProjectiles();
+            ProcessPendingImpacts();
         }
+
+        // Pending impact queue for melee with impact delay (without projectile)
+        private struct PendingImpact { public int TickDue; public int AttackerUnitId; public int TargetUnitId; public int Damage; public DamageType DType; }
+        private List<PendingImpact> _pendingImpacts = new List<PendingImpact>(256);
+        private void QueueImpact(int msDelay, int attackerId, int targetId, int damage, DamageType dt){ if(msDelay<=0){ ApplyDamageToUnit(FindUnitIndex(targetId), damage, dt); return; } int dueTick = State.Tick + (msDelay + SimConstants.MsPerTick -1)/SimConstants.MsPerTick; _pendingImpacts.Add( new PendingImpact{ TickDue=dueTick, AttackerUnitId=attackerId, TargetUnitId=targetId, Damage=damage, DType=dt}); }
+        private void ProcessPendingImpacts(){ for(int i=0;i<_pendingImpacts.Count;){ var p = _pendingImpacts[i]; if(State.Tick >= p.TickDue){ int tIdx = FindUnitIndex(p.TargetUnitId); if(tIdx>=0) ApplyDamageToUnit(tIdx, p.Damage, p.DType); _pendingImpacts[i] = _pendingImpacts[_pendingImpacts.Count-1]; _pendingImpacts.RemoveAt(_pendingImpacts.Count-1); continue; } i++; } }
+
+        private void ResolveAttackLaunch(ref Unit attacker, ref UnitTypeData utd){ attacker.AttackCooldownMs = utd.AttackCooldownMs; int tIdx = FindUnitIndex(attacker.AttackTargetId); if(tIdx<0) return; ref var target = ref State.Units[tIdx]; if(target.FactionId==attacker.FactionId) return; // choose damage type with highest multiplier * (1 - armorFactor)
+            int targetIdx = tIdx; ref var targetData = ref State.UnitTypes[target.TypeId];
+            float bestScore=-1f; DamageType bestDt = DamageType.Melee; int baseDamage = utd.AttackDamageBase;
+            TryScore(DamageType.Melee, utd.DTMelee, targetData.ArmorMelee);
+            TryScore(DamageType.Pierce, utd.DTPierce, targetData.ArmorPierce);
+            TryScore(DamageType.Siege, utd.DTSiege, targetData.ArmorSiege);
+            TryScore(DamageType.Magic, utd.DTMagic, targetData.ArmorMagic);
+            int finalBase = baseDamage; DamageType dt = bestDt;
+            if(utd.HasProjectile==1){ // spawn projectile
+                SpawnProjectile(attacker.X, attacker.Y, target.Id, finalBase, dt, utd.ProjectileSpeed, utd.ProjectileLifetimeMs, attacker.FactionId, (short)attacker.TypeId);
+            } else {
+                QueueImpact(utd.AttackImpactDelayMs, attacker.Id, target.Id, finalBase, dt);
+            }
+        }
+        private void TryScore(DamageType dt, float mult, int armor){ if(mult<=0.0001f) return; float score = mult * (1f - (armor/100f)); if(score>bestScore){ bestScore=score; bestDt=dt; } }
         private int AcquireTargetFor(ref Unit u, int range){ int best=-1; long bestD=long.MaxValue; long r2=(long)range*range; // explicit target priority
             if(u.AttackTargetId!=0){ int idx=FindUnitIndex(u.AttackTargetId); if(idx>=0){ ref var tu=ref State.Units[idx]; if(tu.FactionId!=u.FactionId){ long dx=tu.X-u.X; long dy=tu.Y-u.Y; long d2=dx*dx+dy*dy; if(d2<=r2) return idx; } else u.AttackTargetId=0; } }
             // If attack-move, also search while moving
             for(int j=0;j<State.UnitCount;j++){ ref var t = ref State.Units[j]; if(t.FactionId==u.FactionId || t.HP<=0) continue; long dx=t.X-u.X; long dy=t.Y-u.Y; long d2=dx*dx+dy*dy; if(d2<=r2 && d2<bestD){ bestD=d2; best=j; } }
             return best;
         }
-        private void PerformAttackResolution(ref Unit attacker, UnitTypeData utd){ // direct damage only for now
-            int tIdx = FindUnitIndex(attacker.AttackTargetId); if(tIdx<0) return; ref var target = ref State.Units[tIdx]; if(target.FactionId==attacker.FactionId) return; ApplyDamageToUnit(tIdx, utd.AttackDamage, DamageType.Melee); }
-        private void ApplyDamageToUnit(int unitIndex, int rawDamage, DamageType dtype){ if(unitIndex<0||unitIndex>=State.UnitCount) return; ref var target = ref State.Units[unitIndex]; int final = rawDamage; if(final<1) final=1; target.HP -= final; if(target.HP<=0){ RemoveUnitByIndex(unitIndex); } }
+    private void PerformAttackResolution(ref Unit attacker, UnitTypeData utd){ }
+    private void ApplyDamageToUnit(int unitIndex, int rawDamage, DamageType dtype){ if(unitIndex<0||unitIndex>=State.UnitCount) return; ref var target = ref State.Units[unitIndex]; ref var utd = ref State.UnitTypes[target.TypeId]; int armor=0; switch(dtype){ case DamageType.Melee: armor=utd.ArmorMelee; break; case DamageType.Pierce: armor=utd.ArmorPierce; break; case DamageType.Siege: armor=utd.ArmorSiege; break; case DamageType.Magic: armor=utd.ArmorMagic; break; } int final = rawDamage - armor; if(final<1) final=1; target.HP -= final; if(target.HP<=0){ RemoveUnitByIndex(unitIndex); } }
         private void UpdateProjectiles(){ for(int i=0;i<State.ProjectileCount;){ ref var p = ref State.Projectiles[i]; p.LifetimeMs -= SimConstants.MsPerTick; if(p.LifetimeMs<=0){ RemoveProjectileAt(i); continue; } int targetIdx = FindUnitIndex(p.TargetUnitId); if(targetIdx>=0){ ref var tu = ref State.Units[targetIdx]; // simple homing movement
                     int speedPerTick = p.Speed * SimConstants.MsPerTick / 1000; int dx = tu.X - p.X; int dy = tu.Y - p.Y; long d2=(long)dx*dx+ (long)dy*dy; if(d2 <= 400*400){ // hit radius 400
                         ApplyDamageToUnit(targetIdx, p.Damage, p.DType); RemoveProjectileAt(i); continue; }
@@ -501,6 +539,7 @@ namespace FrontierAges.Sim {
                     RemoveProjectileAt(i); continue; }
                 State.Projectiles[i]=p; i++; }
         }
+    private void SpawnProjectile(int x, int y, int targetUnitId, int damage, DamageType dt, int speed, int lifetimeMs, int factionId, short sourceType){ if(State.ProjectileCount>=State.Projectiles.Length){ var arr=new Projectile[State.Projectiles.Length*2]; System.Array.Copy(State.Projectiles,arr,State.Projectiles.Length); State.Projectiles=arr; } int id = (State.Tick<<10)|State.ProjectileCount; State.Projectiles[State.ProjectileCount++] = new Projectile{ Id=id, X=x, Y=y, TargetUnitId=targetUnitId, AttackSourceTypeId=sourceType, FactionId=factionId, Speed=speed, Damage=damage, DType=dt, LifetimeMs=lifetimeMs}; }
         private void RemoveProjectileAt(int idx){ State.ProjectileCount--; if(idx!=State.ProjectileCount){ State.Projectiles[idx]=State.Projectiles[State.ProjectileCount]; }}
 
         private void GatherStep() {
@@ -779,7 +818,7 @@ namespace FrontierAges.Sim {
     }
 
     // Snapshot DTOs for save/load (simplified JSON-friendly)
-    public static class SnapshotVersions { public const string Current = "5"; }
+    public static class SnapshotVersions { public const string Current = "6"; }
     [System.Serializable] public class Snapshot {
         public int tick;
         public UnitSnap[] units;
@@ -793,11 +832,13 @@ namespace FrontierAges.Sim {
         public int buildingCount;
     public int[] factionPop; public int[] factionPopCap;
     public int[] factionTechFlags; public short[] activeResearchTech; public int[] activeResearchRemaining; public byte[,] explored; // simple serialization (Unity JSON won't handle multidim; placeholder, may need flatten later)
+    public ProjectileSnap[] projectiles;
     }
-    [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int spawnTick; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
+    [System.Serializable] public class UnitSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public OrderType currentOrder; public int currentOrderEntity; public int spawnTick; public int attackCooldown; public int windup; public int[] orderTypes; public int[] orderEnts; public int[] orderXs; public int[] orderYs; public int[] pathX; public int[] pathY; }
     [System.Serializable] public class BuildingSnap { public int id; public short type; public short faction; public int x; public int y; public int hp; public int queueUnitType; public int queueRemaining; public int queueTotal; public byte hasQueue; public short fw; public short fh; public int spawnTick; }
     [System.Serializable] public class FactionSnap { public int food; public int wood; public int stone; public int metal; }
     [System.Serializable] public class ResourceNodeSnap { public int id; public short r; public int x; public int y; public int amt; public int spawnTick; }
+    [System.Serializable] public class ProjectileSnap { public int id; public int x; public int y; public int target; public short sourceType; public int faction; public int speed; public int damage; public DamageType dtype; public int lifetime; }
 
     public static class SnapshotUtil {
         // Capture APIs
@@ -811,6 +852,7 @@ namespace FrontierAges.Sim {
                 buildings = new BuildingSnap[ws.BuildingCount],
                 factions = new FactionSnap[ws.Factions.Length],
                 resourceNodes = new ResourceNodeSnap[ws.ResourceNodeCount],
+                projectiles = new ProjectileSnap[ws.ProjectileCount],
                 version = SnapshotVersions.Current,
                 savedUnix = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 unitCount = ws.UnitCount,
@@ -820,7 +862,7 @@ namespace FrontierAges.Sim {
             for (int i = 0; i < ws.UnitCount; i++) {
                 ref var u = ref ws.Units[i];
                 int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(u.Id, out st);
-                var us = new UnitSnap { id = u.Id, type = u.TypeId, faction = u.FactionId, x = u.X, y = u.Y, hp = u.HP, currentOrder = u.CurrentOrderType, currentOrderEntity = u.CurrentOrderEntity, spawnTick = st };
+                var us = new UnitSnap { id = u.Id, type = u.TypeId, faction = u.FactionId, x = u.X, y = u.Y, hp = u.HP, currentOrder = u.CurrentOrderType, currentOrderEntity = u.CurrentOrderEntity, spawnTick = st, attackCooldown = u.AttackCooldownMs, windup = u.AttackWindupRemainingMs };
                 if (orderQueues != null && orderQueues.TryGetValue(u.Id, out var q) && q.Count > 0) {
                     int max = q.Count > 16 ? 16 : q.Count; // cap
                     us.orderTypes = new int[max]; us.orderEnts = new int[max]; us.orderXs = new int[max]; us.orderYs = new int[max];
@@ -842,6 +884,7 @@ namespace FrontierAges.Sim {
             }
             for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; if (snap.factionPop!=null){ snap.factionPop[f]=fac.Pop; snap.factionPopCap[f]=fac.PopCap; } if (snap.factionTechFlags!=null){ snap.factionTechFlags[f]=ws.FactionTechFlags[f]; snap.activeResearchTech[f]=ws.FactionResearchTechId[f]; snap.activeResearchRemaining[f]=ws.FactionResearchRemainingMs[f]; } }
             for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(rn.Id, out st); snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining, spawnTick = st }; }
+            for (int p=0; p<ws.ProjectileCount; p++){ ref var pr = ref ws.Projectiles[p]; snap.projectiles[p] = new ProjectileSnap{ id=pr.Id, x=pr.X, y=pr.Y, target=pr.TargetUnitId, sourceType=pr.AttackSourceTypeId, faction=pr.FactionId, speed=pr.Speed, damage=pr.Damage, dtype=pr.DType, lifetime=pr.LifetimeMs}; }
             return snap;
         }
 
@@ -859,7 +902,7 @@ namespace FrontierAges.Sim {
             if (snap.units != null) {
                 if (ws.Units.Length < snap.units.Length) ws.Units = new Unit[snap.units.Length];
                 foreach (var us in snap.units) {
-                    ws.Units[ws.UnitCount++] = new Unit { Id = us.id, TypeId = us.type, FactionId = us.faction, X = us.x, Y = us.y, HP = us.hp, CurrentOrderType = us.currentOrder, CurrentOrderEntity = us.currentOrderEntity };
+                    ws.Units[ws.UnitCount++] = new Unit { Id = us.id, TypeId = us.type, FactionId = us.faction, X = us.x, Y = us.y, HP = us.hp, CurrentOrderType = us.currentOrder, CurrentOrderEntity = us.currentOrderEntity, AttackCooldownMs = us.attackCooldown, AttackWindupRemainingMs = us.windup };
                     if (orderQueues != null && us.orderTypes != null) {
                         var list = new List<QueuedOrder>(us.orderTypes.Length);
                         for (int i=0;i<us.orderTypes.Length;i++) list.Add(new QueuedOrder { Type = (OrderType)us.orderTypes[i], TargetEntityId = us.orderEnts?[i] ?? 0, TargetX = us.orderXs?[i] ?? 0, TargetY = us.orderYs?[i] ?? 0 });
@@ -902,25 +945,20 @@ namespace FrontierAges.Sim {
                     if (spawnTicks!=null) spawnTicks[rn.id] = rn.spawnTick;
                 }
             }
+            if (snap.projectiles != null){ if(ws.Projectiles.Length < snap.projectiles.Length) ws.Projectiles = new Projectile[snap.projectiles.Length]; ws.ProjectileCount=0; foreach(var pr in snap.projectiles){ ws.Projectiles[ws.ProjectileCount++] = new Projectile{ Id=pr.id, X=pr.x, Y=pr.y, TargetUnitId=pr.target, AttackSourceTypeId=pr.sourceType, FactionId=pr.faction, Speed=pr.speed, Damage=pr.damage, DType=pr.dtype, LifetimeMs=pr.lifetime}; } }
         }
     }
     // Migration stub (v1 -> v3 adds spawnTick, then pop/tech arrays)
     public static class SnapshotMigrator {
         public static void Migrate(Snapshot snap) {
             if (snap.version == SnapshotVersions.Current) return;
-            switch(snap.version) {
-                case "1":
-                    // upgrade to 2 (spawn tick already handled implicitly by default zeros)
-                    goto case "2";
-                case "2":
-                    // add new arrays for v3
-                    snap.factionPop = new int[8]; snap.factionPopCap = new int[8]; snap.factionTechFlags = new int[8]; snap.activeResearchTech = new short[8]; snap.activeResearchRemaining = new int[8];
-                    snap.version = SnapshotVersions.Current;
-                    break;
-                default:
-                    snap.version = SnapshotVersions.Current;
-                    break;
-            }
+            // Chain migrations to latest
+            if (snap.version == "1") { snap.version = "2"; }
+            if (snap.version == "2") { // introduce pop/tech arrays (v3)
+                snap.factionPop = new int[8]; snap.factionPopCap = new int[8]; snap.factionTechFlags = new int[8]; snap.activeResearchTech = new short[8]; snap.activeResearchRemaining = new int[8]; snap.version = "3"; }
+            if (snap.version == "3" || snap.version=="4" || snap.version=="5") { // versions prior to projectile serialization
+                if (snap.projectiles==null) snap.projectiles = new ProjectileSnap[0]; snap.version = SnapshotVersions.Current; }
+            if (snap.version != SnapshotVersions.Current) snap.version = SnapshotVersions.Current;
         }
     }
 }

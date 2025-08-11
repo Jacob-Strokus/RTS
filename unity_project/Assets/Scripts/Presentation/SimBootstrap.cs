@@ -22,6 +22,8 @@ namespace FrontierAges.Presentation {
     private Vector3 _ghostInvalidColor = new Color(1,0,0,0.4f);
     private bool _autoAssignWorkers = true;
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
+    private readonly System.Collections.Generic.Dictionary<int, GameObject> _projectileViews = new System.Collections.Generic.Dictionary<int, GameObject>();
+    public GameObject ProjectilePrefab; // simple sphere/capsule
 
         private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
         private int _lastPlacedBuildingIndexPersisted;
@@ -77,6 +79,7 @@ namespace FrontierAges.Presentation {
                 _tickSw.Restart();
                 _sim.Tick();
                 _tickSw.Stop();
+                SyncProjectiles();
                 // Store last duration (micro approx) and running avg (EWMA)
                 long micros = (long)(_tickSw.Elapsed.TotalMilliseconds * 1000.0);
                 _sim.State.LastTickDurationMsTimes1000 = micros;
@@ -239,6 +242,8 @@ namespace FrontierAges.Presentation {
             }
             // After spawning units attach health bars
             if (WorldSpaceCanvas && HealthBarPrefab){ foreach(var uv in FindObjectsOfType<UnitView>()){ uv.AttachHealthBar(WorldSpaceCanvas, HealthBarPrefab); } }
+            // Clear projectile views (will respawn as they exist next tick)
+            foreach(var kv in _projectileViews) if(kv.Value) Destroy(kv.Value); _projectileViews.Clear();
         }
 
         private int FindUnitIndex(int id) {
@@ -305,6 +310,12 @@ namespace FrontierAges.Presentation {
                 if (Input.GetMouseButtonDown(1)) { _placingBuilding = false; if (_ghost) Destroy(_ghost); }
             }
         }
+
+        private void SyncProjectiles(){ var ws=_sim.State; // remove stale
+            _projectileViews.Keys.Where(id=> !HasProjectile(id, ws)).ToList().ForEach(id=> { if(_projectileViews[id]) Destroy(_projectileViews[id]); _projectileViews.Remove(id); });
+            for(int i=0;i<ws.ProjectileCount;i++){ ref var p = ref ws.Projectiles[i]; if(!_projectileViews.ContainsKey(p.Id)){ if(ProjectilePrefab){ var go=Instantiate(ProjectilePrefab); go.name=$"Projectile_{p.Id}"; var pv=go.GetComponent<ProjectileView>(); if(!pv) pv=go.AddComponent<ProjectileView>(); pv.Init(p.Id, p.TargetUnitId); _projectileViews[p.Id]=go; go.transform.position = new Vector3(p.X/(float)SimConstants.PositionScale, 0.2f, p.Y/(float)SimConstants.PositionScale); } } else { var go=_projectileViews[p.Id]; if(go) go.transform.position = new Vector3(p.X/(float)SimConstants.PositionScale, 0.2f, p.Y/(float)SimConstants.PositionScale); } }
+        }
+        private bool HasProjectile(int id, WorldState ws){ for(int i=0;i<ws.ProjectileCount;i++) if(ws.Projectiles[i].Id==id) return true; return false; }
 
 #if UNITY_EDITOR
         void OnDrawGizmos() {
