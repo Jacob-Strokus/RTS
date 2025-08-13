@@ -14,6 +14,7 @@ public class ReplayWindow : EditorWindow
     private int _targetTick;
     private Vector2 _eventsScroll;
     private string _filter = "All";
+    private bool _showDivergence;
     private readonly List<Simulator.SimEvent> _simEventsBuf = new List<Simulator.SimEvent>(1024);
     private readonly List<Simulator.DamageEvent> _dmgEventsBuf = new List<Simulator.DamageEvent>(1024);
     private double _lastEditorTime;
@@ -49,8 +50,12 @@ public class ReplayWindow : EditorWindow
         EditorGUILayout.EndHorizontal();
 
         if(rep!=null){ int maxTick = rep.LastRecordedTick; int newTick = EditorGUILayout.IntSlider("Go to Tick", _targetTick, 0, Mathf.Max(maxTick,0)); if(newTick!=_targetTick){ _targetTick=newTick; _sim.TryLoadReplayTick(_targetTick); }
+            // Divergence indicator
+            var ts = (rep.Ticks.Count>0 && _targetTick<rep.Ticks[rep.Ticks.Count-1].Tick+1) ? rep.Ticks.FirstOrDefault(t=>t.Tick==_sim.State.Tick) : default;
+            if(ts.Tick==_sim.State.Tick){ ulong cur = _sim.LastTickHash; string match = ((int)(cur & 0xFFFFFFFF))==ts.Hash?"OK":"MISMATCH"; var c = GUI.color; GUI.color = match=="OK"?Color.green:Color.red; GUILayout.Label($"Divergence: {match}"); GUI.color=c; }
             DrawFilters();
             DrawEventLists(rep);
+            DrawExportImport(rep);
         } else {
             EditorGUILayout.HelpBox("Recording disabled. Enable to capture timeline.", MessageType.Info);
         }
@@ -75,6 +80,15 @@ public class ReplayWindow : EditorWindow
             }
         }
         EditorGUILayout.EndScrollView(); }
+
+    private void DrawExportImport(Simulator.ReplayTimeline rep){ EditorGUILayout.Space(); EditorGUILayout.BeginHorizontal(); if(GUILayout.Button("Export JSON", GUILayout.Width(120))){ string p = EditorUtility.SaveFilePanel("Export Replay", Application.dataPath, "replay.json", "json"); if(!string.IsNullOrEmpty(p)){ var json = JsonUtility.ToJson(new ReplaySerializable(rep)); System.IO.File.WriteAllText(p, json); EditorUtility.RevealInFinder(p); } } if(GUILayout.Button("Import JSON", GUILayout.Width(120))){ string p = EditorUtility.OpenFilePanel("Import Replay", Application.dataPath, "json"); if(!string.IsNullOrEmpty(p)){ var json = System.IO.File.ReadAllText(p); var rs = JsonUtility.FromJson<ReplaySerializable>(json); var loaded = rs?.ToRuntime(); if(loaded!=null){ _sim.LoadReplay(loaded); _targetTick=loaded.LastRecordedTick; _sim.TryLoadReplayTick(_targetTick); } } } EditorGUILayout.EndHorizontal(); }
+
+    [System.Serializable]
+    private class ReplaySerializable{ public List<Simulator.DamageEvent> damage; public List<Simulator.SimEvent> events_; public List<Simulator.ReplayTimeline.TickSummary> ticks; public List<Simulator.Snapshot> snaps; public int lastTick; public int snapInterval;
+        public ReplaySerializable(){}
+        public ReplaySerializable(Simulator.ReplayTimeline rep){ damage = new List<Simulator.DamageEvent>(rep.DamageEvents); events_ = new List<Simulator.SimEvent>(rep.SimEvents); ticks = new List<Simulator.ReplayTimeline.TickSummary>(rep.Ticks); snaps = new List<Simulator.Snapshot>(rep.Snapshots); lastTick = rep.LastRecordedTick; snapInterval = rep.SnapshotInterval; }
+        public Simulator.ReplayTimeline ToRuntime(){ var r = new Simulator.ReplayTimeline(); r.SnapshotInterval = snapInterval>0?snapInterval:50; r.Begin(0); r.DamageEvents.AddRange(damage??new List<Simulator.DamageEvent>()); r.SimEvents.AddRange(events_??new List<Simulator.SimEvent>()); r.Ticks.AddRange(ticks??new List<Simulator.ReplayTimeline.TickSummary>()); r.Snapshots.AddRange(snaps??new List<Simulator.Snapshot>()); r.LastRecordedTick = lastTick; return r; }
+    }
 
     private void Jump(int delta){ int t = Mathf.Clamp(_sim.State.Tick + delta, 0, _sim.Replay!=null?_sim.Replay.LastRecordedTick:_sim.State.Tick); _sim.TryLoadReplayTick(t); _targetTick=t; }
     private void StepTick(){ _sim.Tick(); _targetTick=_sim.State.Tick; }

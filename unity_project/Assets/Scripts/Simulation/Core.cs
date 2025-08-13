@@ -218,7 +218,8 @@ namespace FrontierAges.Sim {
         }
 
         private ReplayTimeline _replay;
-        public ReplayTimeline Replay => _replay;
+    public ReplayTimeline Replay => _replay;
+    public void LoadReplay(ReplayTimeline timeline){ _replay = timeline; }
         public void EnableReplayRecording(int snapshotInterval=50)
         {
             if(_replay==null) _replay = new ReplayTimeline();
@@ -265,6 +266,14 @@ namespace FrontierAges.Sim {
             while(State.Tick<targetTick) Tick();
             _replay=savedReplay; return State.Tick==targetTick;
         }
+
+    // ---- Rollback buffer (circular) ----
+    private readonly System.Collections.Generic.LinkedList<Snapshot> _rollback = new System.Collections.Generic.LinkedList<Snapshot>();
+    private int _rollbackInterval = 20; // ticks
+    private int _rollbackCapacity = 16; // number of snapshots to keep
+    public void ConfigureRollback(int interval, int capacity){ _rollbackInterval = interval>0?interval:20; _rollbackCapacity = capacity>1?capacity:16; }
+    private void RecordRollbackSnapshotIfDue(){ if(_rollbackInterval<=0) return; if(State.Tick % _rollbackInterval != 0) return; var snap = CaptureSnapshot(); _rollback.AddLast(snap); while(_rollback.Count > _rollbackCapacity) _rollback.RemoveFirst(); }
+    public bool TryRollbackToTick(int targetTick){ if(_rollback.Count==0) return false; Snapshot best=null; foreach(var s in _rollback){ if(s.Tick<=targetTick) best=s; else break; } if(best==null) best=_rollback.First.Value; LoadSnapshot(best); int goal = targetTick; var saved=_replay; _replay=null; while(State.Tick<goal) Tick(); _replay=saved; return State.Tick==targetTick; }
 
     // Damage events buffer (cleared when drained by presentation layer)
     private readonly List<DamageEvent> _damageEvents = new List<DamageEvent>(256);
@@ -318,6 +327,7 @@ namespace FrontierAges.Sim {
             // Future: research, pathfinding, combat, economy, vision
             ComputeAndStoreTickHash();
             RecordReplayFrame();
+            RecordRollbackSnapshotIfDue();
         }
 
         private static ulong Mix64(ulong z) {
@@ -517,6 +527,7 @@ namespace FrontierAges.Sim {
             int gx = x / TileSize; int gy = y / TileSize;
             if (gx>=0 && gx<GridSize && gy>=0 && gy<GridSize) _grid[gx,gy] = true;
             _spawnTick[id] = State.Tick;
+            _flowField.NeedsRebuild = _flowField.NeedsRebuild || _flowField.Active;
             return id;
         }
 
@@ -534,6 +545,7 @@ namespace FrontierAges.Sim {
             int initialHP = maxHP/10; if(initialHP<=0) initialHP=1;
             State.Buildings[State.BuildingCount++] = new Building { Id=id, TypeId=buildingTypeId, FactionId=factionId, X=originX, Y=originY, HP=initialHP, QueueUnitType=-1, QueueRemainingMs=0, HasActiveQueue=0, QueueTotalMs=0, FootprintW=(short)wTiles, FootprintH=(short)hTiles, IsUnderConstruction=1, BuildTotalMs=buildTimeMs, BuildRemainingMs=buildTimeMs };
             _spawnTick[id] = State.Tick;
+            _flowField.NeedsRebuild = _flowField.NeedsRebuild || _flowField.Active;
             return id;
         }
 
