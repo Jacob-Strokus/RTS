@@ -53,6 +53,8 @@ public class ReplayWindow : EditorWindow
             // Divergence indicator
             var ts = (rep.Ticks.Count>0 && _targetTick<rep.Ticks[rep.Ticks.Count-1].Tick+1) ? rep.Ticks.FirstOrDefault(t=>t.Tick==_sim.State.Tick) : default;
             if(ts.Tick==_sim.State.Tick){ ulong cur = _sim.LastTickHash; string match = ((int)(cur & 0xFFFFFFFF))==ts.Hash?"OK":"MISMATCH"; var c = GUI.color; GUI.color = match=="OK"?Color.green:Color.red; GUILayout.Label($"Divergence: {match}"); GUI.color=c; }
+            // Rollback controls
+            EditorGUILayout.BeginHorizontal(); GUILayout.Label("Rollback to tick:", GUILayout.Width(110)); int rb = EditorGUILayout.IntField(_targetTick); if(GUILayout.Button("Rollback", GUILayout.Width(90))){ _sim.TryRollbackToTick(rb); _targetTick=_sim.State.Tick; } EditorGUILayout.EndHorizontal();
             DrawFilters();
             DrawEventLists(rep);
             DrawExportImport(rep);
