@@ -354,7 +354,7 @@ namespace FrontierAges.Presentation {
 
         public UnityEngine.UI.Slider ReplayScrubSlider; // assign in canvas
         private bool _scrubInProgress;
-        private System.Collections.Generic.List<CommandData> _cachedReplay;
+    private System.Collections.Generic.List<FrontierAges.Sim.Command> _cachedReplay;
         public RectTransform SnapshotListContainer; public GameObject SnapshotListItemPrefab; // UI list
         private Snapshot _recordBaseline; // local cached baseline for scrub
         private float _scrubLastChangeTime;
@@ -372,10 +372,8 @@ namespace FrontierAges.Presentation {
         public void UiLoadLatest(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
         public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
         private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; // Use new fast forward API
-            // Convert cached replay (CommandData) to Command list proxy
-            var cmdList = new System.Collections.Generic.List<FrontierAges.Sim.Command>(_cachedReplay.Count);
-            foreach(var c in _cachedReplay){ cmdList.Add(new FrontierAges.Sim.Command{ IssueTick=c.IssueTick, Type=(FrontierAges.Sim.CommandType)c.Type, EntityId=c.EntityId, TargetX=c.TargetX, TargetY=c.TargetY }); }
-            _sim.FastForwardFromBaseline(_recordBaseline, cmdList, relativeTick);
+            // _cachedReplay already stores Simulator.Command entries
+            _sim.FastForwardFromBaseline(_recordBaseline, _cachedReplay, relativeTick);
             RebuildViews(); }
     }
 }
