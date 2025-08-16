@@ -377,6 +377,7 @@
 -analyzer:"D:/Unity/Unity Hub/editor/6000.0.55f1/Editor/Data/Tools/Unity.SourceGenerators/Unity.SourceGenerators.dll"
 -analyzer:"D:/Unity/Unity Hub/editor/6000.0.55f1/Editor/Data/Tools/Unity.SourceGenerators/Unity.UIToolkit.SourceGenerator.dll"
 "Assets/Scripts/Editor/AIExampleRunner.cs"
+"Assets/Scripts/Editor/Build/StandaloneBuilder.cs"
 "Assets/Scripts/Editor/DataImporter.cs"
 "Assets/Scripts/Editor/DataSyncToStreamingAssets.cs"
 "Assets/Scripts/Editor/DataTestWindow.cs"

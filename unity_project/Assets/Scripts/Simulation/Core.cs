@@ -745,10 +745,9 @@ namespace FrontierAges.Sim {
             CheckWinLoss();
         }
 
-        // Public helper APIs for gameplay layer
-        public void IssueAttackCommand(int unitId, int targetUnitId) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = CommandType.Attack, EntityId = unitId, TargetX = targetUnitId }); }
-        public void IssueGatherCommand(int unitId, int resourceNodeId) { _cmdQueue.Enqueue(new Command { IssueTick = State.Tick, Type = CommandType.Gather, EntityId = unitId, TargetX = resourceNodeId }); }
-        public bool TryGetPath(int unitId, List<(int x,int y)> buffer) { if (_paths.TryGetValue(unitId, out var p)) { buffer.Clear(); buffer.AddRange(p); return true; } return false; }
+    // Public helper APIs for gameplay layer
+    // Note: Recording-aware versions are defined later; keep a single definition to avoid duplicate members.
+    public bool TryGetPath(int unitId, List<(int x,int y)> buffer) { if (_paths.TryGetValue(unitId, out var p)) { buffer.Clear(); buffer.AddRange(p); return true; } return false; }
 
         // Fog-of-war skeleton: mark tiles around each faction 0 unit as visible (simple diamond radius)
         private byte[,] _prevVisibility = new byte[GridSize,GridSize];
