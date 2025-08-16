@@ -26,6 +26,9 @@ namespace FrontierAges.Presentation {
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
     private readonly System.Collections.Generic.Dictionary<int, GameObject> _projectileViews = new System.Collections.Generic.Dictionary<int, GameObject>();
     public GameObject ProjectilePrefab; // simple sphere/capsule
+    [Header("World-space UI")]
+    public Canvas WorldSpaceCanvas;
+    public GameObject HealthBarPrefab;
 
         private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
         private int _lastPlacedBuildingIndexPersisted;
@@ -367,12 +370,16 @@ namespace FrontierAges.Presentation {
         public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).Take(50); foreach(var f in files){ Snapshot snap=null; try { snap = LoadSnapshotFromFile(f); } catch{} if(snap==null) continue; var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = $"{Path.GetFileNameWithoutExtension(f)} U:{snap.unitCount} B:{snap.buildingCount} v{snap.version}"; if(btn) btn.onClick.AddListener(()=> { SnapshotUtil.Apply(_sim,snap); RebuildViews(); if(SnapshotMetaText) SnapshotMetaText.text=$"Tick {snap.tick} Units {snap.unitCount} Buildings {snap.buildingCount} v{snap.version}"; }); // add delete if child button named Delete exists
                 var del = go.transform.Find("Delete"); if(del){ var db = del.GetComponent<UnityEngine.UI.Button>(); if(db){ string pathCopy=f; db.onClick.AddListener(()=> { try{ File.Delete(pathCopy);} catch{} RefreshSnapshotList(); }); } }
             } }
-        private Snapshot LoadSnapshotFromFile(string path){ if(path.EndsWith(".gz")){ using(var fs=File.OpenRead(path)) using(var gz=new GZipStream(fs,CompressionMode.Decompress)) using(var ms=new MemoryStream()){ gz.CopyTo(ms); var json=System.Text.Encoding.UTF8.GetString(ms.ToArray()); return JsonUtility.FromJson<Snapshot>(json);} } else { var json=File.ReadAllText(path); return JsonUtility.FromJson<Snapshot>(json);} }
-        private void SaveSnapshotToDisk(Snapshot snap){ if(!Directory.Exists(SnapshotDirectory)) Directory.CreateDirectory(SnapshotDirectory); var json=JsonUtility.ToJson(snap); var bytes=System.Text.Encoding.UTF8.GetBytes(json); var file=$"snap_{System.DateTime.UtcNow:yyyyMMdd_HHmmss}_{snap.unitCount}u_{snap.buildingCount}b.json.gz"; var path=Path.Combine(SnapshotDirectory,file); using(var fs=File.Create(path)) using(var gz=new GZipStream(fs,CompressionLevel.Optimal)){ gz.Write(bytes,0,bytes.Length);} }
+    private Snapshot LoadSnapshotFromFile(string path){ if(path.EndsWith(".gz")){ using(var fs=File.OpenRead(path)) using(var gz=new GZipStream(fs,CompressionMode.Decompress)) using(var ms=new MemoryStream()){ gz.CopyTo(ms); var json=System.Text.Encoding.UTF8.GetString(ms.ToArray()); return JsonUtility.FromJson<Snapshot>(json);} } else { var json=File.ReadAllText(path); return JsonUtility.FromJson<Snapshot>(json);} }
+    private void SaveSnapshotToDisk(Snapshot snap){ if(!Directory.Exists(SnapshotDirectory)) Directory.CreateDirectory(SnapshotDirectory); var json=JsonUtility.ToJson(snap); var bytes=System.Text.Encoding.UTF8.GetBytes(json); var file=$"snap_{System.DateTime.UtcNow:yyyyMMdd_HHmmss}_{snap.unitCount}u_{snap.buildingCount}b.json.gz"; var path=Path.Combine(SnapshotDirectory,file); using(var fs=File.Create(path)) using(var gz=new GZipStream(fs,System.IO.Compression.CompressionLevel.Optimal)){ gz.Write(bytes,0,bytes.Length);} }
         public string SnapshotDirectory => Path.Combine(Application.persistentDataPath, "Snapshots");
-        public void UiSaveSnapshotDisk(){ var snap=SnapshotUtil.Capture(_sim); SaveSnapshotToDisk(snap); RefreshSnapshotList(); }
-        public void UiLoadLatest(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
-        public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
+    public void UiSaveSnapshot() { var snap = FrontierAges.Sim.SnapshotUtil.Capture(_sim); _lastSnapshotJson = JsonUtility.ToJson(snap); }
+    public void UiLoadSnapshot() { if(string.IsNullOrEmpty(_lastSnapshotJson)) return; var snap = JsonUtility.FromJson<FrontierAges.Sim.Snapshot>(_lastSnapshotJson); FrontierAges.Sim.SnapshotUtil.Apply(_sim, snap); RebuildViews(); }
+    public void UiSaveSnapshotToDisk(){ var snap=SnapshotUtil.Capture(_sim); SaveSnapshotToDisk(snap); RefreshSnapshotList(); }
+    public void UiLoadLatestSnapshotFromDisk(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
+    public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
+    public void UiStopRecording(){ _cachedReplay = _sim.StopRecording(); ReplayScrubSlider?.SetValueWithoutNotify(0f); }
+    public void UiPlayRecording(){ if(_cachedReplay==null||_cachedReplay.Count==0){ Debug.Log("No recording"); return; } _sim.StartPlayback(_cachedReplay); }
         private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; // Use new fast forward API
             // _cachedReplay already stores Simulator.Command entries
             _sim.FastForwardFromBaseline(_recordBaseline, _cachedReplay, relativeTick);
