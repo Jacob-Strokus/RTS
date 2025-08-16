@@ -228,7 +228,7 @@ namespace FrontierAges.Sim {
             if(_replay==null) _replay = new ReplayTimeline();
             _replay.SnapshotInterval = snapshotInterval;
             _replay.Begin(State.Tick);
-            _replay.Snapshots.Add(CaptureSnapshot()); // baseline snapshot
+            _replay.Snapshots.Add(SnapshotUtil.Capture(this)); // baseline snapshot
         }
         public void DisableReplayRecording(){ _replay=null; }
         private void RecordReplayFrame()
@@ -249,7 +249,7 @@ namespace FrontierAges.Sim {
             _replay.Ticks.Add(summary);
             _replay.LastRecordedTick = State.Tick;
             if((State.Tick % _replay.SnapshotInterval)==0)
-                _replay.Snapshots.Add(CaptureSnapshot());
+                _replay.Snapshots.Add(SnapshotUtil.Capture(this));
             // Clear events so they are not double-recorded. Presentation layer should drain earlier if needed.
             _damageEvents.Clear();
             _simEvents.Clear();
@@ -261,9 +261,9 @@ namespace FrontierAges.Sim {
             if(targetTick==State.Tick) return true;
             // find snapshot <= targetTick
             Snapshot best = null;
-            for(int i=_replay.Snapshots.Count-1;i>=0;i--){ var s=_replay.Snapshots[i]; if(s.Tick<=targetTick){ best=s; break; } }
+            for(int i=_replay.Snapshots.Count-1;i>=0;i--){ var s=_replay.Snapshots[i]; if(s.tick<=targetTick){ best=s; break; } }
             if(best==null) return false;
-            LoadSnapshot(best);
+            SnapshotUtil.Apply(this, best);
             // disable recording while fast-forwarding
             var savedReplay = _replay; _replay=null;
             while(State.Tick<targetTick) Tick();
@@ -275,8 +275,8 @@ namespace FrontierAges.Sim {
     private int _rollbackInterval = 20; // ticks
     private int _rollbackCapacity = 16; // number of snapshots to keep
     public void ConfigureRollback(int interval, int capacity){ _rollbackInterval = interval>0?interval:20; _rollbackCapacity = capacity>1?capacity:16; }
-    private void RecordRollbackSnapshotIfDue(){ if(_rollbackInterval<=0) return; if(State.Tick % _rollbackInterval != 0) return; var snap = CaptureSnapshot(); _rollback.AddLast(snap); while(_rollback.Count > _rollbackCapacity) _rollback.RemoveFirst(); }
-    public bool TryRollbackToTick(int targetTick){ if(_rollback.Count==0) return false; Snapshot best=null; foreach(var s in _rollback){ if(s.Tick<=targetTick) best=s; else break; } if(best==null) best=_rollback.First.Value; LoadSnapshot(best); int goal = targetTick; var saved=_replay; _replay=null; while(State.Tick<goal) Tick(); _replay=saved; return State.Tick==targetTick; }
+    private void RecordRollbackSnapshotIfDue(){ if(_rollbackInterval<=0) return; if(State.Tick % _rollbackInterval != 0) return; var snap = SnapshotUtil.Capture(this); _rollback.AddLast(snap); while(_rollback.Count > _rollbackCapacity) _rollback.RemoveFirst(); }
+    public bool TryRollbackToTick(int targetTick){ if(_rollback.Count==0) return false; Snapshot best=null; foreach(var s in _rollback){ if(s.tick<=targetTick) best=s; else break; } if(best==null) best=_rollback.First.Value; SnapshotUtil.Apply(this, best); int goal = targetTick; var saved=_replay; _replay=null; while(State.Tick<goal) Tick(); _replay=saved; return State.Tick==targetTick; }
 
     // Damage events buffer (cleared when drained by presentation layer)
     private readonly List<DamageEvent> _damageEvents = new List<DamageEvent>(256);
@@ -966,7 +966,9 @@ namespace FrontierAges.Sim {
                 int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(b.Id, out st);
                 snap.buildings[i] = new BuildingSnap { id = b.Id, type = b.TypeId, faction = b.FactionId, x = b.X, y = b.Y, hp = b.HP, queueUnitType = b.QueueUnitType, queueRemaining = b.QueueRemainingMs, queueTotal = b.QueueTotalMs, hasQueue = b.HasActiveQueue, fw = b.FootprintW, fh = b.FootprintH, spawnTick = st };
             }
-            for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; if (snap.factionPop!=null){ snap.factionPop[f]=fac.Pop; snap.factionPopCap[f]=fac.PopCap; } if (snap.factionTechFlags!=null){ snap.factionTechFlags[f]=ws.FactionTechFlags[f]; snap.activeResearchTech[f]=ws.FactionResearchTechId[f]; snap.activeResearchRemaining[f]=ws.FactionResearchRemainingMs[f]; } }
+        for (int f=0; f<ws.Factions.Length; f++) { ref var fac = ref ws.Factions[f]; snap.factions[f] = new FactionSnap { food=fac.Food, wood=fac.Wood, stone=fac.Stone, metal=fac.Metal }; if (snap.factionPop!=null){ snap.factionPop[f]=fac.Pop; snap.factionPopCap[f]=fac.PopCap; } if (snap.factionTechFlags!=null){ snap.factionTechFlags[f]=ws.FactionTechFlags[f]; // snapshot only first research slot for compatibility
+            snap.activeResearchTech[f]=ws.FactionResearchTechId[f,0];
+            snap.activeResearchRemaining[f]=ws.FactionResearchRemainingMs[f,0]; } }
             for (int r=0; r<ws.ResourceNodeCount; r++) { ref var rn = ref ws.ResourceNodes[r]; int st=0; if (spawnTicks!=null) spawnTicks.TryGetValue(rn.Id, out st); snap.resourceNodes[r] = new ResourceNodeSnap { id = rn.Id, r = rn.ResourceType, x = rn.X, y = rn.Y, amt = rn.AmountRemaining, spawnTick = st }; }
             for (int p=0; p<ws.ProjectileCount; p++){ ref var pr = ref ws.Projectiles[p]; snap.projectiles[p] = new ProjectileSnap{ id=pr.Id, x=pr.X, y=pr.Y, target=pr.TargetUnitId, sourceType=pr.AttackSourceTypeId, faction=pr.FactionId, speed=pr.Speed, damage=pr.Damage, dtype=pr.DType, lifetime=pr.LifetimeMs, attacker=pr.AttackerUnitId}; }
             return snap;
@@ -1011,8 +1013,9 @@ namespace FrontierAges.Sim {
             if (snap.factionTechFlags!=null) {
                 for(int f=0; f<ws.Factions.Length && f<snap.factionTechFlags.Length; f++) {
                     ws.FactionTechFlags[f]=snap.factionTechFlags[f];
-                    if (snap.activeResearchTech!=null && f<snap.activeResearchTech.Length) ws.FactionResearchTechId[f]=snap.activeResearchTech[f];
-                    if (snap.activeResearchRemaining!=null && f<snap.activeResearchRemaining.Length) ws.FactionResearchRemainingMs[f]=snap.activeResearchRemaining[f];
+                    // restore only first research slot (others remain default/unchanged)
+                    if (snap.activeResearchTech!=null && f<snap.activeResearchTech.Length) ws.FactionResearchTechId[f,0]=snap.activeResearchTech[f];
+                    if (snap.activeResearchRemaining!=null && f<snap.activeResearchRemaining.Length) ws.FactionResearchRemainingMs[f,0]=snap.activeResearchRemaining[f];
                 }
             }
             if (snap.buildings != null) {
