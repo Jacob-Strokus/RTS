@@ -19,9 +19,9 @@ namespace FrontierAges.Sim {
                         long dx = State.Buildings[bestB].X - u.X; long dy = State.Buildings[bestB].Y - u.Y; long d2 = dx*dx+dy*dy;
                         if (d2 <= (long)depositRange*depositRange) {
                             ref var fac = ref State.Factions[u.FactionId];
-                            int amount = u.CarryAmount; byte rtype = u.CarryResourceType;
-                            switch(rtype){case 0: fac.Food+=amount; break; case 1: fac.Wood+=amount; break; case 2: fac.Stone+=amount; break; case 3: fac.Metal+=amount; break;}
-                            if(amount>0){ _simEvents.Add(new SimEvent{ Type=SimEventType.ResourceCollected, Tick=State.Tick, A=u.Id, B=rtype, C=amount, D=u.FactionId }); }
+                            int amount = u.CarryAmount; byte depositedType = u.CarryResourceType;
+                            switch(depositedType){case 0: fac.Food+=amount; break; case 1: fac.Wood+=amount; break; case 2: fac.Stone+=amount; break; case 3: fac.Metal+=amount; break;}
+                            if(amount>0){ _simEvents.Add(new SimEvent{ Type=SimEventType.ResourceCollected, Tick=State.Tick, A=u.Id, B=depositedType, C=amount, D=u.FactionId }); }
                             u.CarryAmount=0; u.ReturningWithCargo=0;
                             int rnIdx = FindResourceNodeIndex(u.CurrentOrderEntity);
                             if (rnIdx<0 || State.ResourceNodes[rnIdx].AmountRemaining<=0) { u.CurrentOrderType=OrderType.None; u.CurrentOrderEntity=0; }

@@ -177,6 +177,8 @@ namespace FrontierAges.Sim {
         public WorldState State { get; private set; } = new WorldState();
         private readonly ICommandQueue _cmdQueue;
     private DeterministicRng _rng = new DeterministicRng(0xC0FFEEu);
+    // Alias for research slots (declared in WorldState) for use across partials
+    private const int MaxConcurrentResearch = WorldState.MaxConcurrentResearch;
     // Exposed as internal so SnapshotUtil & debug systems can read (prototype scope)
     internal readonly Dictionary<int,List<QueuedOrder>> _orderQueues = new Dictionary<int,List<QueuedOrder>>();
     internal readonly Dictionary<int,List<(int x,int y)>> _paths = new Dictionary<int,List<(int x,int y)>>();
@@ -203,7 +205,7 @@ namespace FrontierAges.Sim {
             public readonly List<DamageEvent> DamageEvents = new List<DamageEvent>(4096);
             public readonly List<SimEvent> SimEvents = new List<SimEvent>(4096);
             public readonly List<TickSummary> Ticks = new List<TickSummary>(4096);
-            public readonly List<Simulator.Snapshot> Snapshots = new List<Simulator.Snapshot>(256);
+            public readonly List<Snapshot> Snapshots = new List<Snapshot>(256);
 
             public int SnapshotInterval = 50; // configurable
             public int LastRecordedTick = -1;
@@ -258,7 +260,7 @@ namespace FrontierAges.Sim {
             if(targetTick<0 || targetTick>_replay.LastRecordedTick) return false;
             if(targetTick==State.Tick) return true;
             // find snapshot <= targetTick
-            Simulator.Snapshot best = null;
+            Snapshot best = null;
             for(int i=_replay.Snapshots.Count-1;i>=0;i--){ var s=_replay.Snapshots[i]; if(s.Tick<=targetTick){ best=s; break; } }
             if(best==null) return false;
             LoadSnapshot(best);
@@ -302,7 +304,7 @@ namespace FrontierAges.Sim {
     public ulong LastTickHash { get; private set; }
 
     // ---- Replay Batches (compressed view) ----
-    private struct ReplayBatch { public int Tick; public int StartIndex; public int Count; }
+    public struct ReplayBatch { public int Tick; public int StartIndex; public int Count; }
     private System.Collections.Generic.List<ReplayBatch> _replayBatches = new System.Collections.Generic.List<ReplayBatch>(256);
     private bool _replayBatchesDirty;
     private void MarkReplayDirty(){ _replayBatchesDirty = true; }
@@ -456,15 +458,15 @@ namespace FrontierAges.Sim {
                 }
                 int speedPerSec = State.UnitTypes[u.TypeId].MoveSpeedMilliPerSec;
                 int moveDist = (speedPerSec * delta) / 1000;
-                int dx = u.TargetX - u.X;
-                int dy = u.TargetY - u.Y;
-                long dist2 = (long)dx * dx + (long)dy * dy;
+                int tdx = u.TargetX - u.X;
+                int tdy = u.TargetY - u.Y;
+                long dist2 = (long)tdx * tdx + (long)tdy * tdy;
                 if (dist2 == 0) { u.HasMoveTarget = 0; continue; }
                 long dist = IntegerSqrt(dist2);
                 if (dist <= moveDist) { u.X = u.TargetX; u.Y = u.TargetY; u.HasMoveTarget = 0; }
                 else {
-                    int mvx = (int)(dx * moveDist / dist);
-                    int mvy = (int)(dy * moveDist / dist);
+                    int mvx = (int)(tdx * moveDist / dist);
+                    int mvy = (int)(tdy * moveDist / dist);
                     // Flow-field steering if applicable
                     if(_flowField.Active){
                         int tx = u.X/TileSize; int ty = u.Y/TileSize;
