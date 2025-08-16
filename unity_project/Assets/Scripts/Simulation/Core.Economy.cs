@@ -9,8 +9,12 @@ namespace FrontierAges.Sim {
                 ref var u = ref State.Units[i];
                 if (u.CurrentOrderType!=OrderType.Gather && u.ReturningWithCargo==0) continue;
                 if (u.ReturningWithCargo==1) {
-                    int bestB=-1; long bestD2=long.MaxValue;
-                    for (int bi=0; bi<State.BuildingCount; bi++) { ref var b = ref State.Buildings[bi]; if (b.FactionId!=u.FactionId) continue; long dx=b.X-u.X; long dy=b.Y-u.Y; long d2=dx*dx+dy*dy; if (d2<bestD2){bestD2=d2; bestB=bi;} }
+                    int bestB=-1; long bestD2=long.MaxValue; int rtype = u.CarryResourceType;
+                    for (int bi=0; bi<State.BuildingCount; bi++) { ref var b = ref State.Buildings[bi]; if (b.FactionId!=u.FactionId) continue; // deposit rules from data: if building declares acceptsDeposit and doesn't include our type, skip
+                        bool accepts = true; if(b.TypeId>=0 && b.TypeId < FrontierAges.Sim.DataRegistry.Buildings.Length){ var bj = FrontierAges.Sim.DataRegistry.Buildings[b.TypeId]; if(bj!=null && bj.acceptsDeposit!=null && bj.acceptsDeposit.Length>0){ accepts = false; var arr=bj.acceptsDeposit; for(int ai=0; ai<arr.Length; ai++){ var s=arr[ai]; if((rtype==0 && s=="food")||(rtype==1 && s=="wood")||(rtype==2 && s=="stone")||(rtype==3 && s=="metal")){ accepts=true; break; } } } }
+                        if(!accepts) continue;
+                        long dx=b.X-u.X; long dy=b.Y-u.Y; long d2=dx*dx+dy*dy; if (d2<bestD2){bestD2=d2; bestB=bi;}
+                    }
                     if (bestB>=0) {
                         long dx = State.Buildings[bestB].X - u.X; long dy = State.Buildings[bestB].Y - u.Y; long d2 = dx*dx+dy*dy;
                         if (d2 <= (long)depositRange*depositRange) {

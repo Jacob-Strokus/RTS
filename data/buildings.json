@@ -9,6 +9,7 @@
       "lineOfSight": 30000,
       "providesPopulation": 10,
       "train": ["worker"],
+  "acceptsDeposit": ["food", "wood", "stone", "metal"],
       "buildTimeMs": 60000,
       "cost": { "wood": 200, "stone": 150 },
       "influenceRadius": 40000
@@ -21,6 +22,7 @@
       "footprint": { "w": 2, "h": 2 },
       "lineOfSight": 12000,
       "providesPopulation": 5,
+  "acceptsDeposit": ["food"],
       "buildTimeMs": 20000,
       "cost": { "wood": 50 }
     },
@@ -32,6 +34,7 @@
       "footprint": { "w": 4, "h": 4 },
       "lineOfSight": 22000,
       "train": ["spearman"],
+  "acceptsDeposit": [],
       "buildTimeMs": 45000,
       "cost": { "wood": 175, "stone": 50 }
     }

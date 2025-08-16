@@ -43,6 +43,14 @@ namespace FrontierAges.Sim {
         }
         public void ReceiveRemoteFrame(int futureTick, int playerIndex, IList<Command> cmds){ EnsureFrame(futureTick); var f=_frames[futureTick]; if(!f.Received[playerIndex]){ f.Received[playerIndex]=true; for(int i=0;i<cmds.Count;i++) f.Commands.Add(cmds[i]); _frames[futureTick]=f; }
         }
+        public void ReceiveRemoteHash(int tick, ulong remoteHash){
+            // Compare with our sample; if mismatch, try naive rollback to that tick
+            var local = GetHashAtTick(tick);
+            if(local.HasValue && local.Value != remoteHash){
+                // Try to rollback; if it fails, ignore for now (could be outside buffer)
+                _sim.TryRollbackToTick(tick);
+            }
+        }
         private bool AllReceived(Frame f){ for(int i=0;i<f.Received.Length;i++) if(!f.Received[i]) return false; return true; }
         // Simple divergence check (external can call compare vs authoritative sample)
         public ulong? GetHashAtTick(int tick){ foreach(var hs in _recentHashes) if(hs.Tick==tick) return hs.Hash; return null; }

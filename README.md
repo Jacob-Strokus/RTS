@@ -62,23 +62,17 @@ FixedTick (20 Hz):
 ```
 
 ## Contribution Next Steps
-- Implement Unity project scaffolding
-- Create ScriptableObject adapters reading `/data/*.json`
-- Prototype Systems: Camera, Selection, Command, Pathfinding, Resource Loop
+
+## Standalone builds
+
+- Branch: feature/standalone-build
+- Folders: `build/` (timestamped build outputs), `bin/` (shortcut to latest build)
+- In Unity (open `unity_project/`):
+  - Menu: FrontierAges > Data > Sync to StreamingAssets (copies repo `data/` into `Assets/StreamingAssets/data`)
+  - Menu: FrontierAges > Build > Build Windows (x64)
+  - Output: `build/windows-x64-YYYYMMDD-HHMMSS/FrontierAges.exe` and mirrored to `bin/windows-x64-latest/`
 
 See `/docs/milestones.md` for milestone definitions.
-
-## Current Prototype Features
-- Deterministic 20 Hz simulation core (engine‑agnostic `Simulation` assembly)
-- Data‑driven JSON registries (units / buildings / resources / techs) stub importer
-- Movement with 8‑direction A* pathfinding (pooled allocations)
-- Order queues (move / attack / gather) + active order state
-- Combat: auto acquire + explicit attack command API and in‑scene issuing (press A while hovering target after selecting attacker)
-- Resource economy: nodes, worker gather/carry/deposit loop, auto‑assign idle workers (toggle H) with HUD status
-- Building placement: footprint validation, ghost preview + grid overlay (B to toggle placement, , and . to cycle building types), collider BuildingView with footprint outline on selection
-- Production: single‑slot building training queue with progress (QueueTotalMs tracking for UI slider)
-- Selection: click & drag for units & buildings, multi‑selection aggregation (counts, avg queue progress), distinct gizmo colors, carried resource display
-- Profiling metrics: average tick duration microseconds in HUD
 - Snapshot system: save (F5) / load (F9) including unit order queues and movement paths (capped lengths) + building footprints + faction stockpiles + resource nodes
 - Deterministic RNG embedded (xorshift32) used for spawn variation
 

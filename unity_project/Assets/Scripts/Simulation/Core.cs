@@ -77,8 +77,9 @@ namespace FrontierAges.Sim {
         public Faction[] Factions = new Faction[8];
         public ResourceNode[] ResourceNodes = new ResourceNode[256];
         public int ResourceNodeCount;
-    public byte[,] Visibility; // fog-of-war tiles (1 visible, 0 unseen) prototype
+    public byte[,] Visibility; // fog-of-war tiles (1 visible, 0 unseen) prototype (local player)
     public byte[,] Explored; // enhanced fog: tiles that were ever seen (1 explored)
+    public int LocalFactionId; // which faction's vision is represented in Visibility/Explored
     public Projectile[] Projectiles = new Projectile[512];
     public int ProjectileCount;
     // Profiling accumulators (not deterministic-critical)
@@ -280,12 +281,12 @@ namespace FrontierAges.Sim {
     public int DrainDamageEvents(List<DamageEvent> buffer){ if(buffer==null) return 0; buffer.Clear(); if(_damageEvents.Count==0) return 0; buffer.AddRange(_damageEvents); _damageEvents.Clear(); return buffer.Count; }
     public System.Collections.Generic.IReadOnlyList<DamageEvent> PeekDamageEvents()=>_damageEvents;
     public struct SimEvent { public SimEventType Type; public int Tick; public int A; public int B; public int C; public int D; }
-    public enum SimEventType : byte { UnitSpawned=1, UnitDied=2, ResourceCollected=3, ResearchComplete=4 }
+    public enum SimEventType : byte { UnitSpawned=1, UnitDied=2, ResourceCollected=3, ResearchComplete=4, FactionDefeated=5, Victory=6, BuildingDestroyed=7 }
     private readonly List<SimEvent> _simEvents = new List<SimEvent>(256);
     public int DrainSimEvents(List<SimEvent> buffer){ if(buffer==null) return 0; buffer.Clear(); if(_simEvents.Count==0) return 0; buffer.AddRange(_simEvents); _simEvents.Clear(); return buffer.Count; }
     public System.Collections.Generic.IReadOnlyList<SimEvent> PeekSimEvents()=>_simEvents;
 
-    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; State.Explored = new byte[GridSize,GridSize]; for(int f=0; f<8; f++){ for(int s=0;s<MaxConcurrentResearch;s++){ State.FactionResearchTechId[f,s] = -1; } State.FactionAges[f]=1; } }
+    public Simulator(ICommandQueue queue) { _cmdQueue = queue; _grid = new bool[GridSize,GridSize]; State.Visibility = new byte[GridSize,GridSize]; State.Explored = new byte[GridSize,GridSize]; for(int f=0; f<8; f++){ for(int s=0;s<MaxConcurrentResearch;s++){ State.FactionResearchTechId[f,s] = -1; } State.FactionAges[f]=1; } State.LocalFactionId = 0; }
     // Spatial / steering helpers
     private SpatialGrid _spatial = new SpatialGrid(GridSize*SimConstants.PositionScale, GridSize*SimConstants.PositionScale, SimConstants.PositionScale*2);
     private FlowField _flowField = new FlowField();
@@ -394,7 +395,7 @@ namespace FrontierAges.Sim {
             }
         }
 
-        private void ProcessUnitOrderQueues() {
+    private void ProcessUnitOrderQueues() {
             // Activate next order if idle
             foreach (var kv in _orderQueues) {
                 int unitId = kv.Key; var list = kv.Value; if (list.Count == 0) continue;
@@ -421,6 +422,25 @@ namespace FrontierAges.Sim {
             int delta = SimConstants.MsPerTick; // ms per tick
             for (int i = 0; i < State.UnitCount; i++) {
                 ref var u = ref State.Units[i];
+                // Chase logic for explicit Attack orders: move toward target (unit or building) until in range
+                if (u.CurrentOrderType == OrderType.Attack) {
+                    int tx=0, ty=0; bool haveTarget=false;
+                    if (u.AttackTargetId != 0) {
+                        int tu = FindUnitIndex(u.AttackTargetId);
+                        if (tu >= 0) { tx = State.Units[tu].X; ty = State.Units[tu].Y; haveTarget = true; }
+                        else {
+                            int tb = FindBuildingIndex(u.AttackTargetId);
+                            if (tb >= 0) { tx = State.Buildings[tb].X; ty = State.Buildings[tb].Y; haveTarget = true; }
+                            else { u.AttackTargetId = 0; u.CurrentOrderType = OrderType.None; }
+                        }
+                    }
+                    if (haveTarget) {
+                        int range = State.UnitTypes[u.TypeId].AttackRange;
+                        long dx = tx - u.X; long dy = ty - u.Y; long d2 = dx*dx + dy*dy; long r2 = (long)range * range;
+                        if (d2 > r2) { u.TargetX = tx; u.TargetY = ty; u.HasMoveTarget = 1; ComputePathForUnit(u.Id, tx, ty); }
+                        else { u.HasMoveTarget = 0; }
+                    }
+                }
                 if (u.HasMoveTarget == 0) continue;
                 // If path exists follow waypoint
                 if (_paths.TryGetValue(u.Id, out var path) && path.Count > 0) {
@@ -614,6 +634,28 @@ namespace FrontierAges.Sim {
             for (int i = 0; i < State.BuildingCount; i++) if (State.Buildings[i].Id == id) return i; return -1;
         }
 
+        private void RemoveBuildingByIndex(int idx){
+            // Cleanup grid occupancy by footprint if available
+            ref var b = ref State.Buildings[idx];
+            int w = b.FootprintW>0? b.FootprintW:1; int h=b.FootprintH>0? b.FootprintH:1;
+            int gx0=b.X/TileSize; int gy0=b.Y/TileSize;
+            for(int dx=0;dx<w;dx++) for(int dy=0;dy<h;dy++){
+                int gx=gx0+dx, gy=gy0+dy; if(gx>=0&&gy>=0&&gx<GridSize&&gy<GridSize) _grid[gx,gy]=false;
+            }
+            int id=b.Id; short typeId=b.TypeId; short faction=b.FactionId;
+            // Adjust pop cap if this building provided it
+            if(typeId>=0 && typeId < DataRegistry.Buildings.Length){ var bj = DataRegistry.Buildings[typeId]; if(bj!=null && bj.providesPopulation>0){ ref var f = ref State.Factions[faction]; f.PopCap -= bj.providesPopulation; if(f.PopCap<0) f.PopCap=0; } }
+            // Compact array
+            State.BuildingCount--; if(idx!=State.BuildingCount){ State.Buildings[idx]=State.Buildings[State.BuildingCount]; }
+            _simEvents.Add(new SimEvent{ Type=SimEventType.BuildingDestroyed, Tick=State.Tick, A=id, B=typeId, C=faction });
+            // Rebuild flow field if needed
+            _flowField.NeedsRebuild = _flowField.NeedsRebuild || _flowField.Active;
+            // Evaluate win/loss after building destruction
+            CheckWinLoss();
+        }
+
+        public void DestroyBuilding(int buildingId){ int idx=FindBuildingIndex(buildingId); if(idx>=0) RemoveBuildingByIndex(idx); }
+
         private void QueueOrder(int unitId, QueuedOrder order) {
             if (!_orderQueues.TryGetValue(unitId, out var list)) {
                 list = new List<QueuedOrder>(4);
@@ -699,6 +741,8 @@ namespace FrontierAges.Sim {
             if (fac.Pop >= popCost) fac.Pop -= popCost;
             State.UnitCount--; if (idx != State.UnitCount) { State.Units[idx] = State.Units[State.UnitCount]; _unitIndex[State.Units[idx].Id] = idx; }
             _simEvents.Add(new SimEvent{ Type=SimEventType.UnitDied, Tick=State.Tick, A=id, B=typeId, C=factionId });
+            // Evaluate win/loss after a death (buildings removal should also trigger this when implemented)
+            CheckWinLoss();
         }
 
         // Public helper APIs for gameplay layer
@@ -716,7 +760,7 @@ namespace FrontierAges.Sim {
             // Reset only active map region
             for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) vis[x,y]=0;
             int radiusTiles = 6; // placeholder vision radius
-            for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=_mapWidth||gy>=_mapHeight) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
+            for (int i=0;i<State.UnitCount;i++) { ref var u = ref State.Units[i]; if(u.FactionId!=State.LocalFactionId) continue; int ux = u.X/TileSize; int uy = u.Y/TileSize; for (int dx=-radiusTiles; dx<=radiusTiles; dx++) for (int dy=-radiusTiles; dy<=radiusTiles; dy++) { int gx=ux+dx; int gy=uy+dy; if (gx<0||gy<0||gx>=_mapWidth||gy>=_mapHeight) continue; if (dx*dx+dy*dy <= radiusTiles*radiusTiles) vis[gx,gy]=1; } }
             // Track dirties comparing with previous
             _visionDirty.Clear();
             for (int x=0;x<_mapWidth;x++) for (int y=0;y<_mapHeight;y++) { if (vis[x,y]==1) State.Explored[x,y]=1; byte prev = _prevVisibility[x,y]; if (vis[x,y] != prev) { _visionDirty.Add((x,y)); _prevVisibility[x,y] = vis[x,y]; } else if (State.Explored[x,y]==1 && prev==0) { // remained unseen but explored newly? not possible
@@ -724,6 +768,8 @@ namespace FrontierAges.Sim {
             }
         }
         public IReadOnlyList<(int x,int y)> GetVisionDirty() => _visionDirty;
+        public bool IsWorldPosVisible(int worldX, int worldY){ int gx=worldX/TileSize; int gy=worldY/TileSize; if(gx<0||gy<0||gx>=_mapWidth||gy>=_mapHeight) return false; return State.Visibility[gx,gy]==1; }
+        public void SetLocalVisionFaction(int factionId){ State.LocalFactionId = System.Math.Clamp(factionId,0,State.Factions.Length-1); }
 
     // --- Research / Tech System (multi-slot) ---
     public bool IsTechResearched(int factionId, short techIndex){ return (State.FactionTechFlags[factionId] & (1<<techIndex))!=0; }
@@ -824,6 +870,24 @@ namespace FrontierAges.Sim {
     // Schedule future-tick command (used by lockstep). Not recorded (replay handles deterministic distribution).
     public void ScheduleCommand(CommandType type, int entityId, int targetX, int targetY, int executeTick){ _cmdQueue.Enqueue(new Command{ IssueTick=executeTick, Type=type, EntityId=entityId, TargetX=targetX, TargetY=targetY }); }
     // Tick already uses ProcessCommandsWrapper inside Tick method
+    }
+
+    // Win/Loss evaluation helper (placed outside Simulator methods above to avoid patch overlap)
+    // Note: This method belongs to Simulator class region; placed here to keep compilation consistent.
+    public partial class Simulator {
+        private void CheckWinLoss(){
+            bool[] alive = new bool[State.Factions.Length];
+            for(int i=0;i<State.UnitCount;i++) alive[State.Units[i].FactionId] = true;
+            for(int i=0;i<State.BuildingCount;i++) alive[State.Buildings[i].FactionId] = true;
+            int survivors = 0; int last = -1;
+            for(int f=0; f<State.Factions.Length; f++){
+                if(alive[f]){ survivors++; last=f; }
+                else {
+                    if(State.FactionTechFlags[f] != -1){ _simEvents.Add(new SimEvent{ Type=SimEventType.FactionDefeated, Tick=State.Tick, A=f }); State.FactionTechFlags[f] = -1; }
+                }
+            }
+            if(survivors==1 && last>=0){ _simEvents.Add(new SimEvent{ Type=SimEventType.Victory, Tick=State.Tick, A=last }); }
+        }
     }
 
     // Simple deterministic RNG (xorshift32)
