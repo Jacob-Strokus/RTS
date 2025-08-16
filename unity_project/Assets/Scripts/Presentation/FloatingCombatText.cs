@@ -28,7 +28,16 @@ namespace FrontierAges.Presentation {
             _legacy.text = _text; _legacy.fontSize = _critical?48:32; _legacy.color = _critical?Color.yellow:Color.white;
 #endif
         }
-        void Update(){ _age += Time.deltaTime; transform.position += Vector3.up * RiseSpeed * Time.deltaTime; float remain = Lifetime - _age; if(remain <= FadeTime){ float t = Mathf.Clamp01(remain/ FadeTime); SetAlpha(t); } if(_age>=Lifetime){ _age=0f; if(Manager!=null) Manager.Recycle(this); else Destroy(gameObject); return; } transform.LookAt(Camera.main? Camera.main.transform: transform.position + Vector3.forward); transform.rotation = Quaternion.LookRotation(transform.position - (Camera.main?Camera.main.transform.position:Vector3.zero)); }
+                void Update(){
+                        _age += Time.deltaTime;
+                        transform.position += Vector3.up * RiseSpeed * Time.deltaTime;
+                        float remain = Lifetime - _age;
+                        if(remain <= FadeTime){ float t = Mathf.Clamp01(remain/ FadeTime); SetAlpha(t); }
+                        if(_age>=Lifetime){ _age=0f; if(Manager!=null) Manager.Recycle(this); else Destroy(gameObject); return; }
+                        var cam = Camera.main;
+                        Vector3 lookTarget = cam ? cam.transform.position : transform.position + Vector3.forward;
+                        transform.rotation = Quaternion.LookRotation(transform.position - lookTarget);
+                }
         public void OnEnable(){ _age=0f; }
         private void SetAlpha(float a){
 #if TMP_PRESENT

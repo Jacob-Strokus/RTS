@@ -30,10 +30,10 @@ namespace FrontierAges.Presentation {
             transform.position = new Vector3(u.X / (float)SimConstants.PositionScale, 0, u.Y / (float)SimConstants.PositionScale);
 
             if (_sim != null) {
-                var ws = _sim.State; int idx = FindUnitIndex(EntityId, ws); if (idx>=0) { ref var u = ref ws.Units[idx];
-                    if (_hpFill) _hpFill.fillAmount = Mathf.Clamp01(u.HP / (float)ws.UnitTypes[u.TypeId].MaxHP);
-                    if (_lastHp > 0 && u.HP < _lastHp) { _hitFlash = 0.25f; }
-                    _lastHp = u.HP;
+                var ws = _sim.State; int uIdx = FindUnitIndex(EntityId, ws); if (uIdx>=0) { ref var uu = ref ws.Units[uIdx];
+                    if (_hpFill) _hpFill.fillAmount = Mathf.Clamp01(uu.HP / (float)ws.UnitTypes[uu.TypeId].MaxHP);
+                    if (_lastHp > 0 && uu.HP < _lastHp) { _hitFlash = 0.25f; }
+                    _lastHp = uu.HP;
                 }
             }
             if (_hitFlash > 0 && _rend) { _hitFlash -= Time.deltaTime; float t = _hitFlash / 0.25f; _rend.material.color = Color.Lerp(Color.white, Color.red, t); }

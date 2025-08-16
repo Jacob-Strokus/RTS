@@ -18,8 +18,10 @@ namespace FrontierAges.Presentation {
     private SelectionManager _selection;
     private GameObject _ghost;
     private bool _placingBuilding;
-    private Vector3 _ghostValidColor = new Color(0,1,0,0.4f);
-    private Vector3 _ghostInvalidColor = new Color(1,0,0,0.4f);
+    private Color _ghostValidColor = new Color(0,1,0,0.4f);
+    private Color _ghostInvalidColor = new Color(1,0,0,0.4f);
+    public Material FogMaterial; // assigned in inspector (optional)
+    private FogOverlay _fog;
     private bool _autoAssignWorkers = true;
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
     private readonly System.Collections.Generic.Dictionary<int, GameObject> _projectileViews = new System.Collections.Generic.Dictionary<int, GameObject>();
@@ -37,7 +39,7 @@ namespace FrontierAges.Presentation {
             var typeId = _sim.RegisterUnitType(new FrontierAges.Sim.UnitTypeData {
                 MoveSpeedMilliPerSec = 2500,
                 MaxHP = 50,
-                AttackDamage = 5,
+                AttackDamageBase = 5,
                 AttackCooldownMs = 1000,
                 AttackRange = 3000,
                 GatherRatePerSec = 1,
