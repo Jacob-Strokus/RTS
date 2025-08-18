@@ -18,6 +18,7 @@ namespace FrontierAges.EditorTools {
             LoadBuildings();
             LoadTechs();
             LoadMapConfig();
+            BuildRuntimeUnitTypeData();
             ValidateCrossRefs();
             Debug.Log($"Imported Data: Resources={DataRegistry.Resources.Length} Units={DataRegistry.Units.Length} Attacks={DataRegistry.Attacks.Length} Buildings={DataRegistry.Buildings.Length}");
         }
@@ -79,6 +80,47 @@ namespace FrontierAges.EditorTools {
             }
             if (warnings == 0) Debug.Log("Validation passed: all references resolved.");
         }
+
+        private static void BuildRuntimeUnitTypeData(){ var sim = Object.FindObjectOfType<FrontierAges.Presentation.SimBootstrap>()?.GetSimulator(); if(sim==null){ Debug.LogWarning("Simulator not found; cannot build runtime unit types yet."); return; }
+            foreach(var u in DataRegistry.Units){ FrontierAges.Sim.UnitTypeData utd = new FrontierAges.Sim.UnitTypeData(); utd.MoveSpeedMilliPerSec = (int)u.moveSpeed; utd.MaxHP = u.maxHP; utd.GatherRatePerSec = 0; utd.CarryCapacity = u.carryCapacity>0? u.carryCapacity:10; utd.Flags=0; utd.PopCost = (byte)(u.population>0? u.population:1);
+                if(u.gatherRates!=null){ // mark as worker if any gather rate >0; capture per-resource integer rates
+                    // Keep original average for legacy fallback
+                    float[] rates = { u.gatherRates.food, u.gatherRates.wood, u.gatherRates.stone, u.gatherRates.metal };
+                    float sum = 0f; int nonZero=0; foreach(var r in rates){ if(r>0){ sum+=r; nonZero++; } }
+                    if(sum>0f){ float avg = sum / nonZero; utd.Flags |= 1; utd.GatherRatePerSec = Mathf.Max(1, Mathf.RoundToInt(avg)); }
+                    utd.GatherFoodPerSec = u.gatherRates.food>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.food)) : 0;
+                    utd.GatherWoodPerSec = u.gatherRates.wood>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.wood)) : 0;
+                    utd.GatherStonePerSec = u.gatherRates.stone>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.stone)) : 0;
+                    utd.GatherMetalPerSec = u.gatherRates.metal>0? Mathf.Max(1, Mathf.RoundToInt(u.gatherRates.metal)) : 0;
+                }
+                if(u.cost!=null){ utd.FoodCost=u.cost.food; utd.WoodCost=u.cost.wood; utd.StoneCost=u.cost.stone; utd.MetalCost=u.cost.metal; }
+                if(u.trainTimeMs>0) utd.TrainTimeMs = u.trainTimeMs;
+                // Armor
+                if(u.armor!=null){ utd.ArmorMelee = u.armor.melee; utd.ArmorPierce = u.armor.pierce; utd.ArmorSiege = u.armor.siege; utd.ArmorMagic = u.armor.magic; }
+                // Costs (if present) - reflect into fields via reflection dynamic JSON (not strongly typed). We'll attempt to parse via JsonUtility not supporting dictionaries; so skip advanced.
+                // Attack profile with damage type multipliers
+                if(!string.IsNullOrEmpty(u.attackProfile)){
+                    var ap = FindAttack(u.attackProfile);
+                    if(ap!=null){
+                        utd.AttackRange = (int)ap.range;
+                        utd.AttackDamageBase = ap.damage;
+                        utd.AttackCooldownMs = ap.cooldownMs;
+                        utd.AttackWindupMs = ap.windupMs;
+                        utd.AttackImpactDelayMs = ap.impactDelayMs;
+                        if(ap.projectile!=null){
+                            utd.HasProjectile=1; utd.ProjectileSpeed = ap.projectile.speed; utd.ProjectileLifetimeMs = ap.projectile.lifetimeMs>0? ap.projectile.lifetimeMs: 5000; utd.ProjectileHoming = (byte)(ap.projectile.homing!=0?1:0);
+                        }
+                        if(ap.damageTypes!=null){
+                            utd.DTMelee = ap.damageTypes.melee==0?1f:ap.damageTypes.melee;
+                            utd.DTPierce = ap.damageTypes.pierce;
+                            utd.DTSiege = ap.damageTypes.siege;
+                            utd.DTMagic = ap.damageTypes.magic;
+                        } else { utd.DTMelee = 1f; }
+                    }
+                }
+                sim.RegisterUnitType(utd); }
+        }
+        private static AttackJson FindAttack(string id){ foreach(var a in DataRegistry.Attacks) if(a.id==id) return a; return null; }
     }
 }
 #endif

@@ -3,14 +3,19 @@ namespace FrontierAges.Sim {
     [System.Serializable] public class ResourceDef { public string id; public string displayName; public string description; }
     [System.Serializable] public class ResourceDefList { public ResourceDef[] resources; }
 
-    [System.Serializable] public class UnitTypeJson { public string id; public int age; public int maxHP; public float moveSpeed; public string attackProfile; }
+    [System.Serializable] public class ArmorJson { public int melee; public int pierce; public int siege; public int magic; }
+    [System.Serializable] public class GatherRatesJson { public float wood; public float food; public float stone; public float metal; }
+    [System.Serializable] public class CostJson { public int food; public int wood; public int stone; public int metal; }
+    [System.Serializable] public class UnitTypeJson { public string id; public int age; public int maxHP; public float moveSpeed; public string attackProfile; public ArmorJson armor; public GatherRatesJson gatherRates; public int carryCapacity; public CostJson cost; public int trainTimeMs; public int population; }
     [System.Serializable] public class UnitTypeJsonList { public UnitTypeJson[] units; }
 
-    [System.Serializable] public class AttackJson { public string id; public float range; public int cooldownMs; public int damage; }
+    [System.Serializable] public class AttackDamageTypesJson { public float melee; public float pierce; public float siege; public float magic; }
+    [System.Serializable] public class AttackProjectileJson { public int speed; public int lifetimeMs; public int homing; }
+    [System.Serializable] public class AttackJson { public string id; public float range; public int cooldownMs; public int damage; public int windupMs; public int impactDelayMs; public AttackProjectileJson projectile; public AttackDamageTypesJson damageTypes; }
     [System.Serializable] public class AttackJsonList { public AttackJson[] attacks; }
 
-    [System.Serializable] public class CostJson { public int food; public int wood; public int stone; public int metal; }
-    [System.Serializable] public class BuildingJson { public string id; public int age; public int maxHP; public string[] train; public Footprint footprint; public int buildTimeMs; public CostJson cost; public int providesPopulation; }
+    // (CostJson moved above for reuse)
+    [System.Serializable] public class BuildingJson { public string id; public string displayName; public int age; public int maxHP; public string[] train; public Footprint footprint; public int buildTimeMs; public CostJson cost; public int providesPopulation; public int lineOfSight; public string[] acceptsDeposit; }
     [System.Serializable] public class Footprint { public int w; public int h; }
     [System.Serializable] public class BuildingJsonList { public BuildingJson[] buildings; }
 

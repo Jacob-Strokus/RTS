@@ -18,10 +18,17 @@ namespace FrontierAges.Presentation {
     private SelectionManager _selection;
     private GameObject _ghost;
     private bool _placingBuilding;
-    private Vector3 _ghostValidColor = new Color(0,1,0,0.4f);
-    private Vector3 _ghostInvalidColor = new Color(1,0,0,0.4f);
+    private Color _ghostValidColor = new Color(0,1,0,0.4f);
+    private Color _ghostInvalidColor = new Color(1,0,0,0.4f);
+    public Material FogMaterial; // assigned in inspector (optional)
+    private FogOverlay _fog;
     private bool _autoAssignWorkers = true;
     private System.Diagnostics.Stopwatch _tickSw = new System.Diagnostics.Stopwatch();
+    private readonly System.Collections.Generic.Dictionary<int, GameObject> _projectileViews = new System.Collections.Generic.Dictionary<int, GameObject>();
+    public GameObject ProjectilePrefab; // simple sphere/capsule
+    [Header("World-space UI")]
+    public Canvas WorldSpaceCanvas;
+    public GameObject HealthBarPrefab;
 
         private int _placeBuildingIndex = 0; // index into DataRegistry.Buildings
         private int _lastPlacedBuildingIndexPersisted;
@@ -35,7 +42,7 @@ namespace FrontierAges.Presentation {
             var typeId = _sim.RegisterUnitType(new FrontierAges.Sim.UnitTypeData {
                 MoveSpeedMilliPerSec = 2500,
                 MaxHP = 50,
-                AttackDamage = 5,
+                AttackDamageBase = 5,
                 AttackCooldownMs = 1000,
                 AttackRange = 3000,
                 GatherRatePerSec = 1,
@@ -77,6 +84,9 @@ namespace FrontierAges.Presentation {
                 _tickSw.Restart();
                 _sim.Tick();
                 _tickSw.Stop();
+                SyncProjectiles();
+                // Drain damage events and spawn floating text
+                if(FloatingTextManager){ _damageBuffer ??= new System.Collections.Generic.List<FrontierAges.Sim.DamageEvent>(128); if(_sim.DrainDamageEvents(_damageBuffer)>0){ foreach(var de in _damageBuffer){ FloatingTextManager.Spawn(de); } } }
                 // Store last duration (micro approx) and running avg (EWMA)
                 long micros = (long)(_tickSw.Elapsed.TotalMilliseconds * 1000.0);
                 _sim.State.LastTickDurationMsTimes1000 = micros;
@@ -172,6 +182,11 @@ namespace FrontierAges.Presentation {
                 TryIssueAttackFromSelection();
             }
 
+            // Shift + A : attack-move to cursor for selection
+            if (Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.A)) {
+                IssueAttackMoveFromSelection();
+            }
+
             // F5 save snapshot, F9 load (prototype convenience)
             if (Input.GetKeyDown(KeyCode.F5)) {
                 var snap = FrontierAges.Sim.SnapshotUtil.Capture(_sim); _lastSnapshotJson = JsonUtility.ToJson(snap);
@@ -194,6 +209,10 @@ namespace FrontierAges.Presentation {
             }
         }
 
+    // Floating combat text support
+    public FloatingCombatTextManager FloatingTextManager;
+    private System.Collections.Generic.List<FrontierAges.Sim.DamageEvent> _damageBuffer;
+
         private void TryIssueAttackFromSelection() {
             if (_selection == null) return; if (_selection.Selected.Count == 0) return;
             // pick first selected as attacker
@@ -207,6 +226,8 @@ namespace FrontierAges.Presentation {
                 }
             }
         }
+
+        private void IssueAttackMoveFromSelection(){ if(_selection==null || _selection.Selected.Count==0) return; var ray=Camera.main.ScreenPointToRay(Input.mousePosition); if(Physics.Raycast(ray,out var hit,500f)){ int tx = (int)(hit.point.x * SimConstants.PositionScale); int ty = (int)(hit.point.z * SimConstants.PositionScale); foreach(var id in _selection.Selected){ _queue.Enqueue( new FrontierAges.Sim.Command{ IssueTick=_sim.State.Tick, Type=FrontierAges.Sim.CommandType.AttackMove, EntityId=id, TargetX=tx, TargetY=ty}); } } }
 
         private void RebuildViews() {
             // Destroy existing spawned unit & building view objects (rudimentary: tag by components)
@@ -232,6 +253,8 @@ namespace FrontierAges.Presentation {
             }
             // After spawning units attach health bars
             if (WorldSpaceCanvas && HealthBarPrefab){ foreach(var uv in FindObjectsOfType<UnitView>()){ uv.AttachHealthBar(WorldSpaceCanvas, HealthBarPrefab); } }
+            // Clear projectile views (will respawn as they exist next tick)
+            foreach(var kv in _projectileViews) if(kv.Value) Destroy(kv.Value); _projectileViews.Clear();
         }
 
         private int FindUnitIndex(int id) {
@@ -299,6 +322,12 @@ namespace FrontierAges.Presentation {
             }
         }
 
+        private void SyncProjectiles(){ var ws=_sim.State; // remove stale
+            _projectileViews.Keys.Where(id=> !HasProjectile(id, ws)).ToList().ForEach(id=> { if(_projectileViews[id]) Destroy(_projectileViews[id]); _projectileViews.Remove(id); });
+            for(int i=0;i<ws.ProjectileCount;i++){ ref var p = ref ws.Projectiles[i]; if(!_projectileViews.ContainsKey(p.Id)){ if(ProjectilePrefab){ var go=Instantiate(ProjectilePrefab); go.name=$"Projectile_{p.Id}"; var pv=go.GetComponent<ProjectileView>(); if(!pv) pv=go.AddComponent<ProjectileView>(); pv.Init(p.Id, p.TargetUnitId); _projectileViews[p.Id]=go; go.transform.position = new Vector3(p.X/(float)SimConstants.PositionScale, 0.2f, p.Y/(float)SimConstants.PositionScale); } } else { var go=_projectileViews[p.Id]; if(go) go.transform.position = new Vector3(p.X/(float)SimConstants.PositionScale, 0.2f, p.Y/(float)SimConstants.PositionScale); } }
+        }
+        private bool HasProjectile(int id, WorldState ws){ for(int i=0;i<ws.ProjectileCount;i++) if(ws.Projectiles[i].Id==id) return true; return false; }
+
 #if UNITY_EDITOR
         void OnDrawGizmos() {
             if (_placingBuilding) {
@@ -330,7 +359,7 @@ namespace FrontierAges.Presentation {
 
         public UnityEngine.UI.Slider ReplayScrubSlider; // assign in canvas
         private bool _scrubInProgress;
-        private System.Collections.Generic.List<CommandData> _cachedReplay;
+    private System.Collections.Generic.List<FrontierAges.Sim.Command> _cachedReplay;
         public RectTransform SnapshotListContainer; public GameObject SnapshotListItemPrefab; // UI list
         private Snapshot _recordBaseline; // local cached baseline for scrub
         private float _scrubLastChangeTime;
@@ -341,17 +370,19 @@ namespace FrontierAges.Presentation {
         public void RefreshSnapshotList(){ if(!Directory.Exists(SnapshotDirectory) || SnapshotListContainer==null || SnapshotListItemPrefab==null) return; foreach(Transform c in SnapshotListContainer) Destroy(c.gameObject); var files = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).Take(50); foreach(var f in files){ Snapshot snap=null; try { snap = LoadSnapshotFromFile(f); } catch{} if(snap==null) continue; var go = Instantiate(SnapshotListItemPrefab, SnapshotListContainer); var btn = go.GetComponent<UnityEngine.UI.Button>(); var txt = go.GetComponentInChildren<UnityEngine.UI.Text>(); if(txt) txt.text = $"{Path.GetFileNameWithoutExtension(f)} U:{snap.unitCount} B:{snap.buildingCount} v{snap.version}"; if(btn) btn.onClick.AddListener(()=> { SnapshotUtil.Apply(_sim,snap); RebuildViews(); if(SnapshotMetaText) SnapshotMetaText.text=$"Tick {snap.tick} Units {snap.unitCount} Buildings {snap.buildingCount} v{snap.version}"; }); // add delete if child button named Delete exists
                 var del = go.transform.Find("Delete"); if(del){ var db = del.GetComponent<UnityEngine.UI.Button>(); if(db){ string pathCopy=f; db.onClick.AddListener(()=> { try{ File.Delete(pathCopy);} catch{} RefreshSnapshotList(); }); } }
             } }
-        private Snapshot LoadSnapshotFromFile(string path){ if(path.EndsWith(".gz")){ using(var fs=File.OpenRead(path)) using(var gz=new GZipStream(fs,CompressionMode.Decompress)) using(var ms=new MemoryStream()){ gz.CopyTo(ms); var json=System.Text.Encoding.UTF8.GetString(ms.ToArray()); return JsonUtility.FromJson<Snapshot>(json);} } else { var json=File.ReadAllText(path); return JsonUtility.FromJson<Snapshot>(json);} }
-        private void SaveSnapshotToDisk(Snapshot snap){ if(!Directory.Exists(SnapshotDirectory)) Directory.CreateDirectory(SnapshotDirectory); var json=JsonUtility.ToJson(snap); var bytes=System.Text.Encoding.UTF8.GetBytes(json); var file=$"snap_{System.DateTime.UtcNow:yyyyMMdd_HHmmss}_{snap.unitCount}u_{snap.buildingCount}b.json.gz"; var path=Path.Combine(SnapshotDirectory,file); using(var fs=File.Create(path)) using(var gz=new GZipStream(fs,CompressionLevel.Optimal)){ gz.Write(bytes,0,bytes.Length);} }
+    private Snapshot LoadSnapshotFromFile(string path){ if(path.EndsWith(".gz")){ using(var fs=File.OpenRead(path)) using(var gz=new GZipStream(fs,CompressionMode.Decompress)) using(var ms=new MemoryStream()){ gz.CopyTo(ms); var json=System.Text.Encoding.UTF8.GetString(ms.ToArray()); return JsonUtility.FromJson<Snapshot>(json);} } else { var json=File.ReadAllText(path); return JsonUtility.FromJson<Snapshot>(json);} }
+    private void SaveSnapshotToDisk(Snapshot snap){ if(!Directory.Exists(SnapshotDirectory)) Directory.CreateDirectory(SnapshotDirectory); var json=JsonUtility.ToJson(snap); var bytes=System.Text.Encoding.UTF8.GetBytes(json); var file=$"snap_{System.DateTime.UtcNow:yyyyMMdd_HHmmss}_{snap.unitCount}u_{snap.buildingCount}b.json.gz"; var path=Path.Combine(SnapshotDirectory,file); using(var fs=File.Create(path)) using(var gz=new GZipStream(fs,System.IO.Compression.CompressionLevel.Optimal)){ gz.Write(bytes,0,bytes.Length);} }
         public string SnapshotDirectory => Path.Combine(Application.persistentDataPath, "Snapshots");
-        public void UiSaveSnapshotDisk(){ var snap=SnapshotUtil.Capture(_sim); SaveSnapshotToDisk(snap); RefreshSnapshotList(); }
-        public void UiLoadLatest(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
-        public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
+    public void UiSaveSnapshot() { var snap = FrontierAges.Sim.SnapshotUtil.Capture(_sim); _lastSnapshotJson = JsonUtility.ToJson(snap); }
+    public void UiLoadSnapshot() { if(string.IsNullOrEmpty(_lastSnapshotJson)) return; var snap = JsonUtility.FromJson<FrontierAges.Sim.Snapshot>(_lastSnapshotJson); FrontierAges.Sim.SnapshotUtil.Apply(_sim, snap); RebuildViews(); }
+    public void UiSaveSnapshotToDisk(){ var snap=SnapshotUtil.Capture(_sim); SaveSnapshotToDisk(snap); RefreshSnapshotList(); }
+    public void UiLoadLatestSnapshotFromDisk(){ if(!Directory.Exists(SnapshotDirectory)) return; var latest = Directory.GetFiles(SnapshotDirectory, "snap_*.json.gz").Concat(Directory.GetFiles(SnapshotDirectory, "snap_*.json")).OrderByDescending(f=>f).FirstOrDefault(); if(latest==null) return; var snap=LoadSnapshotFromFile(latest); SnapshotUtil.Apply(_sim,snap); RebuildViews(); }
+    public void UiStartRecording(){ _sim.StartRecording(); _recordBaseline = SnapshotUtil.Capture(_sim.State); Debug.Log("Replay recording started"); }
+    public void UiStopRecording(){ _cachedReplay = _sim.StopRecording(); ReplayScrubSlider?.SetValueWithoutNotify(0f); }
+    public void UiPlayRecording(){ if(_cachedReplay==null||_cachedReplay.Count==0){ Debug.Log("No recording"); return; } _sim.StartPlayback(_cachedReplay); }
         private void JumpToReplayTick(int relativeTick){ if(_cachedReplay==null||_recordBaseline==null) return; // Use new fast forward API
-            // Convert cached replay (CommandData) to Command list proxy
-            var cmdList = new System.Collections.Generic.List<FrontierAges.Sim.Command>(_cachedReplay.Count);
-            foreach(var c in _cachedReplay){ cmdList.Add(new FrontierAges.Sim.Command{ IssueTick=c.IssueTick, Type=(FrontierAges.Sim.CommandType)c.Type, EntityId=c.EntityId, TargetX=c.TargetX, TargetY=c.TargetY }); }
-            _sim.FastForwardFromBaseline(_recordBaseline, cmdList, relativeTick);
+            // _cachedReplay already stores Simulator.Command entries
+            _sim.FastForwardFromBaseline(_recordBaseline, _cachedReplay, relativeTick);
             RebuildViews(); }
     }
 }

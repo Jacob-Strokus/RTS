@@ -1,0 +1,8 @@
+{
+  "resources": [
+    { "id": "food",  "displayName": "Food",  "description": "Sustains population" },
+    { "id": "wood",  "displayName": "Wood",  "description": "Basic construction material" },
+    { "id": "stone", "displayName": "Stone", "description": "Fortifications and heavy buildings" },
+    { "id": "metal", "displayName": "Metal", "description": "Advanced arms and tech" }
+  ]
+}

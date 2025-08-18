@@ -1,0 +1,49 @@
+# Unity
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uilds/
+[Bb]uild/
+[Bb]in/
+[Ll]ogs/
+[Mm]emoryCaptures/
+[Ss]ysinfo/
+/[Uu]ser[Ss]ettings/
+
+# OS/IDE
+.DS_Store
+*.swp
+*.user
+*.userprefs
+.vs/
+.idea/
+*.suo
+*.tmp
+*.pidb
+*.booproj
+*.svd
+ExportedObj/
+.consulo/
+*.apk
+*.aab
+*.unitypackage
+
+# Unity Package Cache (generated)
+**/[Pp]ackages/PackageCache/
+
+# Rider
+*.iml
+.gradle/
+
+# Crash / Unity Hub installers
+UnityHubSetup*.exe
+
+# Repo-specific ignores
+/Game/
+/My project/
+/build/
+/bin/
+/unity_project/Library/
+/unity_project/Logs/
+/unity_project/Temp/
+/unity_project/Obj/
