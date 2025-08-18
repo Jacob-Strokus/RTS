@@ -1,0 +1,36 @@
+{
+  "units": [
+    {
+      "id": "worker",
+      "displayName": "Worker",
+      "age": 1,
+      "category": "civilian",
+      "maxHP": 50,
+      "moveSpeed": 2500,
+      "acceleration": 8000,
+      "sight": 18000,
+      "gatherRates": { "wood": 0.9, "food": 0.9, "stone": 0.6, "metal": 0.5 },
+      "carryCapacity": 10,
+      "buildOptions": ["town_center", "house", "barracks"],
+      "attackProfile": null,
+      "cost": { "food": 50 },
+      "trainTimeMs": 15000,
+      "population": 1
+    },
+    {
+      "id": "spearman",
+      "displayName": "Spearman",
+      "age": 1,
+      "category": "infantry",
+      "maxHP": 90,
+      "moveSpeed": 2600,
+      "acceleration": 9000,
+      "sight": 20000,
+      "attackProfile": "melee_spear_basic",
+      "armor": { "melee": 1, "pierce": 0 },
+      "cost": { "food": 60, "wood": 20 },
+      "trainTimeMs": 18000,
+      "population": 1
+    }
+  ]
+}

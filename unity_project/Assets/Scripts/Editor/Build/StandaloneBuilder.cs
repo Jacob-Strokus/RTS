@@ -6,6 +6,8 @@ using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+using UnityEditor.SceneManagement;
+using UnityEngine.SceneManagement;
 
 namespace FrontierAges.EditorTools.Build {
     public static class StandaloneBuilder {
@@ -24,11 +26,30 @@ namespace FrontierAges.EditorTools.Build {
 
             var scenes = FindEnabledScenes();
             if (scenes.Length == 0) {
-                if (EditorUtility.DisplayDialog("No Scenes in Build Settings", "No scenes are set in Build Settings. Build a bootstrap-only player?", "Yes", "Cancel"))
-                {
-                    // Attempt to create a temporary scene list using current open scene
-                    var current = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene().path;
-                    if (!string.IsNullOrEmpty(current)) scenes = new[] { current };
+                // Batch-mode safe fallback: try current scene, otherwise any scene under Assets
+                var current = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene().path;
+                if (!string.IsNullOrEmpty(current)) {
+                    scenes = new[] { current };
+                } else {
+                    var anyScenes = AssetDatabase.FindAssets("t:Scene").Select(AssetDatabase.GUIDToAssetPath).Where(p => !string.IsNullOrEmpty(p)).ToArray();
+                    if (anyScenes.Length > 0) scenes = new[] { anyScenes[0] };
+                }
+                // If still empty and we are not in batch mode, offer a dialog
+                if (scenes.Length == 0 && !Application.isBatchMode) {
+                    if (EditorUtility.DisplayDialog("No Scenes in Build Settings", "No scenes are set in Build Settings. Build a bootstrap-only player using the currently open scene?", "Yes", "Cancel"))
+                    {
+                        current = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene().path;
+                        if (!string.IsNullOrEmpty(current)) scenes = new[] { current };
+                    }
+                }
+                // If still empty, auto-generate a minimal bootstrap scene to allow building
+                if (scenes.Length == 0) {
+                    string bootstrapPath = EnsureBootstrapScene();
+                    if (!string.IsNullOrEmpty(bootstrapPath)) {
+                        scenes = new[] { bootstrapPath };
+                        EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(bootstrapPath, true) };
+                        Debug.Log($"[Build] Created minimal bootstrap scene at {bootstrapPath}");
+                    }
                 }
             }
             var options = new BuildPlayerOptions {
@@ -60,6 +81,33 @@ namespace FrontierAges.EditorTools.Build {
             Directory.CreateDirectory(target.FullName);
             foreach (var dir in source.GetDirectories()) CopyAll(dir, target.CreateSubdirectory(dir.Name));
             foreach (var file in source.GetFiles()) file.CopyTo(Path.Combine(target.FullName, file.Name), true);
+        }
+
+        // Create a minimal scene with camera/light and a SimBootstrap component, save it, return its path
+        private static string EnsureBootstrapScene(){
+            try {
+                string scenesDir = "Assets/Scenes";
+                if (!AssetDatabase.IsValidFolder(scenesDir)) {
+                    AssetDatabase.CreateFolder("Assets", "Scenes");
+                }
+                string scenePath = Path.Combine(scenesDir, "Bootstrap.unity").Replace('\\','/');
+                // Create default scene (includes camera and light)
+                var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+                // Add empty GO with SimBootstrap via reflection to avoid hard assembly ref issues
+                var go = new GameObject("SimBootstrap");
+                var type = System.Type.GetType("FrontierAges.Presentation.SimBootstrap, Gameplay.Presentation");
+                if (type != null) go.AddComponent(type);
+                // Save scene
+                if (!EditorSceneManager.SaveScene(scene, scenePath)) {
+                    Debug.LogWarning("[Build] Failed to save auto-generated Bootstrap scene.");
+                    return null;
+                }
+                AssetDatabase.Refresh();
+                return scenePath;
+            } catch (System.Exception ex) {
+                Debug.LogWarning($"[Build] Could not auto-create bootstrap scene: {ex.Message}");
+                return null;
+            }
         }
     }
 

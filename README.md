@@ -72,6 +72,19 @@ FixedTick (20 Hz):
   - Menu: FrontierAges > Build > Build Windows (x64)
   - Output: `build/windows-x64-YYYYMMDD-HHMMSS/FrontierAges.exe` and mirrored to `bin/windows-x64-latest/`
 
+### Build and run from CLI (no Unity Hub)
+
+- PowerShell (Windows):
+  - Script: `scripts\build-and-run.ps1`
+  - Usage: `.\u200bscripts\build-and-run.ps1 -UnityPath "C:\\Program Files\\Unity\\Hub\\Editor\\<ver>\\Editor\\Unity.exe"` (Unity path optional if auto-detected)
+  - Flags: `-NoRun` to skip launching after build.
+  - Output exe: `bin\windows-x64-latest\FrontierAges.exe`
+
+- Bash (WSL/Linux/macOS):
+  - Script: `scripts/build-and-run.sh`
+  - Ensure `UNITY_EDITOR_PATH` or `UNITY_PATH` points to your Unity editor binary, or pass via `UNITY_PATH=/path/to/Unity ./scripts/build-and-run.sh`
+  - Under WSL, the script will attempt to launch the Windows exe via `powershell.exe` if available.
+
 See `/docs/milestones.md` for milestone definitions.
 - Snapshot system: save (F5) / load (F9) including unit order queues and movement paths (capped lengths) + building footprints + faction stockpiles + resource nodes
 - Deterministic RNG embedded (xorshift32) used for spawn variation

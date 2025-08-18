@@ -1,0 +1,22 @@
+{
+  "techs": [
+    {
+      "id": "age_up_2",
+      "displayName": "Advance to Era II",
+      "prereq": [],
+      "age": 1,
+      "researchTimeMs": 90000,
+      "cost": { "food": 400, "wood": 200, "metal": 100 },
+      "effects": [ { "type": "unlockAge", "targetAge": 2 } ]
+    },
+    {
+      "id": "age_up_3",
+      "displayName": "Advance to Era III",
+      "prereq": ["age_up_2"],
+      "age": 2,
+      "researchTimeMs": 120000,
+      "cost": { "food": 800, "wood": 400, "metal": 300 },
+      "effects": [ { "type": "unlockAge", "targetAge": 3 } ]
+    }
+  ]
+}

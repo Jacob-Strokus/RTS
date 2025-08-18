@@ -4,6 +4,9 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/Bootstrap.unity
+    guid: 8dedf5b08a202534c89d9b20e7d8dab7
   m_configObjects: {}
   m_UseUCBPForAssetBundles: 0
