@@ -38,6 +38,11 @@ namespace FrontierAges.Presentation {
             _sim = new Simulator(_queue);
             _autoAssignWorkers = PlayerPrefs.GetInt("fa_autoAssign",1)==1;
             _sim.AutoAssignWorkersEnabled = _autoAssignWorkers;
+            // Ensure minimal default prefabs exist so bootstrap is playable without setup
+            if (UnitPrefab == null) UnitPrefab = CreateDefaultUnitPrefab();
+            if (BuildingViewPrefab == null) BuildingViewPrefab = CreateDefaultBuildingViewPrefab();
+            if (BuildingGhostPrefab == null) BuildingGhostPrefab = CreateDefaultGhostPrefab();
+
             // Register provisional unit type 0 (worker placeholder)
             var typeId = _sim.RegisterUnitType(new FrontierAges.Sim.UnitTypeData {
                 MoveSpeedMilliPerSec = 2500,
@@ -72,6 +77,57 @@ namespace FrontierAges.Presentation {
 
             // Fog overlay instantiation
             if (FogMaterial){ var fogGo = new GameObject("FogOverlay"); fogGo.transform.position = Vector3.zero; _fog = fogGo.AddComponent<FogOverlay>(); var mf = fogGo.AddComponent<MeshFilter>(); fogGo.AddComponent<MeshRenderer>().sharedMaterial = FogMaterial; _fog.Init(_sim,128,128); }
+
+            // Runtime fallbacks: ensure SelectionManager and Help overlay exist for minimal UX
+            if (FindObjectOfType<SelectionManager>() == null) { var selGo = new GameObject("SelectionManager"); selGo.AddComponent<SelectionManager>(); }
+            if (FindObjectOfType<MinimalHelpOverlay>() == null) { var helpGo = new GameObject("HelpOverlay"); helpGo.AddComponent<MinimalHelpOverlay>(); }
+        }
+
+        private GameObject CreateDefaultUnitPrefab(){
+            var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            go.name = "Unit_DefaultPrefab";
+            var rend = go.GetComponent<Renderer>();
+            if (rend) {
+                try { var mat = rend.material; if (mat != null) mat.color = new Color(0.65f,0.85f,1f,1f); } catch {}
+            }
+            var col = go.GetComponent<Collider>(); if (col) col.isTrigger = false;
+            go.AddComponent<UnitView>();
+            return go;
+        }
+
+        private GameObject CreateDefaultBuildingViewPrefab(){
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = "Building_DefaultPrefab";
+            var rend = go.GetComponent<Renderer>();
+            if (rend) {
+                try { var mat = rend.material; if (mat != null) mat.color = new Color(0.8f,0.75f,0.6f,1f); } catch {}
+            }
+            var existingCol = go.GetComponent<Collider>(); if (existingCol && !(existingCol is BoxCollider)) { Destroy(existingCol); }
+            if (!go.TryGetComponent<BoxCollider>(out var _)) go.AddComponent<BoxCollider>();
+            go.AddComponent<BuildingView>();
+            return go;
+        }
+
+        private GameObject CreateDefaultGhostPrefab(){
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = "Building_GhostPrefab";
+            // Make it semi-transparent green; remove collider to avoid blocking raycasts
+            var coll = go.GetComponent<Collider>(); if (coll) Destroy(coll);
+            var rend = go.GetComponent<Renderer>();
+            if (rend) {
+                try {
+                    var mat = rend.material; // instance a per-renderer material
+                    if (mat != null) {
+                        mat.color = new Color(0f,1f,0f,0.35f);
+                        // Try to enable transparency if supported by the current shader (best-effort, no hard dependency)
+                        if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 1f); // URP Lit transparent
+                        if (mat.HasProperty("_Mode")) mat.SetFloat("_Mode", 3f); // Built-in Standard transparent
+                        mat.EnableKeyword("_ALPHABLEND_ON");
+                        mat.renderQueue = 3000;
+                    }
+                } catch {}
+            }
+            return go;
         }
 
     public Simulator GetSimulator() => _sim;

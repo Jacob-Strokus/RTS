@@ -61,6 +61,8 @@ namespace FrontierAges.EditorTools.Build {
             var report = BuildPipeline.BuildPlayer(options);
             if (report.summary.result == BuildResult.Succeeded) {
                 Debug.Log($"[Build] Success -> {outDir}");
+                // Safety net: ensure StreamingAssets exists in the built player folder
+                try { EnsureStreamingAssetsInBuild(outDir); } catch (System.Exception ex) { Debug.LogWarning($"[Build] EnsureStreamingAssetsInBuild warning: {ex.Message}"); }
                 // Copy to bin as 'latest'
                 string latest = Path.Combine(BinRoot, "windows-x64-latest");
                 if (Directory.Exists(latest)) Directory.Delete(latest, true);
@@ -83,7 +85,34 @@ namespace FrontierAges.EditorTools.Build {
             foreach (var file in source.GetFiles()) file.CopyTo(Path.Combine(target.FullName, file.Name), true);
         }
 
-        // Create a minimal scene with camera/light and a SimBootstrap component, save it, return its path
+        // Make sure the built player contains StreamingAssets/data/*.json
+        private static void EnsureStreamingAssetsInBuild(string outDir){
+            // Windows player data folder convention
+            string dataDir = Path.Combine(outDir, "FrontierAges_Data");
+            if (!Directory.Exists(dataDir)) { Debug.LogWarning($"[Build] Data folder not found: {dataDir}"); return; }
+            string saRoot = Path.Combine(dataDir, "StreamingAssets");
+            string saData = Path.Combine(saRoot, "data");
+            bool needsCopy = !Directory.Exists(saData) || Directory.GetFiles(saData, "*.json", SearchOption.TopDirectoryOnly).Length == 0;
+            if (!needsCopy) return;
+
+            // Preferred source: project Assets/StreamingAssets/data
+            string projectSAData = Path.Combine(Application.dataPath, "StreamingAssets", "data");
+            // Fallback: repo-level data folder
+            string repoRoot = Path.GetFullPath(Path.Combine(Application.dataPath, "..", ".."));
+            string repoData = Path.Combine(repoRoot, "data");
+
+            string source = Directory.Exists(projectSAData) ? projectSAData : repoData;
+            if (!Directory.Exists(source)) { Debug.LogWarning($"[Build] No source for StreamingAssets data: {source}"); return; }
+
+            Directory.CreateDirectory(saData);
+            foreach (var file in Directory.GetFiles(source, "*", SearchOption.TopDirectoryOnly)) {
+                var name = Path.GetFileName(file);
+                File.Copy(file, Path.Combine(saData, name), true);
+            }
+            Debug.Log($"[Build] Repaired StreamingAssets data into player: {saData}");
+        }
+
+        // Create a minimal scene with camera/light and a SimBootstrap component, plus basic interactables, then save it and return its path
         private static string EnsureBootstrapScene(){
             try {
                 string scenesDir = "Assets/Scenes";
@@ -97,6 +126,38 @@ namespace FrontierAges.EditorTools.Build {
                 var go = new GameObject("SimBootstrap");
                 var type = System.Type.GetType("FrontierAges.Presentation.SimBootstrap, Gameplay.Presentation");
                 if (type != null) go.AddComponent(type);
+
+                // Add SelectionManager (if available)
+                var selType = System.Type.GetType("FrontierAges.Presentation.SelectionManager, Gameplay.Presentation");
+                if (selType != null) {
+                    var selectionGo = new GameObject("SelectionManager");
+                    selectionGo.AddComponent(selType);
+                }
+
+                // Add a simple help overlay to explain controls (if available)
+                var helpType = System.Type.GetType("FrontierAges.Presentation.MinimalHelpOverlay, Gameplay.Presentation");
+                if (helpType != null) {
+                    var helpGo = new GameObject("HelpOverlay");
+                    helpGo.AddComponent(helpType);
+                }
+
+                // Add a ground plane with collider for raycasts
+                var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
+                ground.name = "Ground";
+                ground.transform.position = Vector3.zero;
+                ground.transform.localScale = new Vector3(10f, 1f, 10f); // 100x100 units
+                var groundRenderer = ground.GetComponent<Renderer>();
+                if (groundRenderer != null) {
+                    groundRenderer.sharedMaterial = new Material(Shader.Find("Standard"));
+                    groundRenderer.sharedMaterial.color = new Color(0.22f, 0.24f, 0.26f, 1f);
+                }
+
+                // Adjust camera for a better top-down view
+                var cam = Camera.main;
+                if (cam != null) {
+                    cam.transform.position = new Vector3(20f, 30f, -20f);
+                    cam.transform.rotation = Quaternion.Euler(60f, 45f, 0f);
+                }
                 // Save scene
                 if (!EditorSceneManager.SaveScene(scene, scenePath)) {
                     Debug.LogWarning("[Build] Failed to save auto-generated Bootstrap scene.");
@@ -114,9 +175,14 @@ namespace FrontierAges.EditorTools.Build {
     // Safe wrapper to call DataSync without hard reference order issues
     internal static class DataSyncToStreamingAssetsInvoker {
         public static void TrySync(){
-            var t = Type.GetType("FrontierAges.EditorTools.DataSyncToStreamingAssets, Assembly-CSharp-Editor");
-            var m = t?.GetMethod("SyncMenu", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            m?.Invoke(null, null);
+            // Try known assembly names for editor code
+            Type t = null;
+            t = t ?? Type.GetType("FrontierAges.EditorTools.DataSyncToStreamingAssets, Gameplay.Editor");
+            t = t ?? Type.GetType("FrontierAges.EditorTools.DataSyncToStreamingAssets, Assembly-CSharp-Editor");
+            if (t == null) { Debug.LogWarning("[DataSyncInvoker] Could not locate DataSyncToStreamingAssets type."); return; }
+            var m = t.GetMethod("SyncMenu", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            if (m == null) { Debug.LogWarning("[DataSyncInvoker] Sync method not found."); return; }
+            m.Invoke(null, null);
         }
     }
 }
