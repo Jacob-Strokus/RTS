@@ -11,7 +11,9 @@ namespace FrontierAges.Presentation {
         private float _hitFlash;
         private Renderer _rend;
         public GameObject HealthBarPrefab; // assign optional prefab with child Image fill
+#if UNITY_UGUI
         private UnityEngine.UI.Image _hpFill;
+#endif
 
         public void Init(int entityId, Simulator sim) {
             EntityId = entityId; _sim = sim; _lastKnownTick = -1;
@@ -31,7 +33,9 @@ namespace FrontierAges.Presentation {
 
             if (_sim != null) {
                 var ws = _sim.State; int uIdx = FindUnitIndex(EntityId, ws); if (uIdx>=0) { ref var uu = ref ws.Units[uIdx];
+#if UNITY_UGUI
                     if (_hpFill) _hpFill.fillAmount = Mathf.Clamp01(uu.HP / (float)ws.UnitTypes[uu.TypeId].MaxHP);
+#endif
                     if (_lastHp > 0 && uu.HP < _lastHp) { _hitFlash = 0.25f; }
                     _lastHp = uu.HP;
                 }
@@ -44,7 +48,10 @@ namespace FrontierAges.Presentation {
         }
 
         public void AttachHealthBar(Canvas worldCanvas, GameObject prefab) {
-            if (!prefab || !worldCanvas) return; var inst = GameObject.Instantiate(prefab, worldCanvas.transform); inst.transform.SetParent(worldCanvas.transform); inst.GetComponent<RectTransform>().sizeDelta = new Vector2(40,4); _hpFill = inst.GetComponentInChildren<UnityEngine.UI.Image>(); var follow = inst.AddComponent<WorldSpaceBillboard>(); follow.Target = this.transform; }
+#if UNITY_UGUI
+            if (!prefab || !worldCanvas) return; var inst = GameObject.Instantiate(prefab, worldCanvas.transform); inst.transform.SetParent(worldCanvas.transform); inst.GetComponent<RectTransform>().sizeDelta = new Vector2(40,4); _hpFill = inst.GetComponentInChildren<UnityEngine.UI.Image>(); var follow = inst.AddComponent<WorldSpaceBillboard>(); follow.Target = this.transform;
+#endif
+        }
 
 #if UNITY_EDITOR
         void OnDrawGizmosSelected() {

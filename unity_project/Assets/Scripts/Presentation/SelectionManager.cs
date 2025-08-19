@@ -87,6 +87,43 @@ namespace FrontierAges.Presentation {
         }
 
         public IReadOnlyCollection<int> Selected => _selected;
+        
+        // API methods for RTSInputManager
+        public HashSet<int> GetSelectedUnits() {
+            var units = new HashSet<int>();
+            if (_sim == null) return units;
+            
+            foreach (var id in _selected) {
+                int unitIndex = FindUnitIndex(id, _sim.State);
+                if (unitIndex >= 0) {
+                    units.Add(id);
+                }
+            }
+            return units;
+        }
+        
+        public HashSet<int> GetSelectedEntities() {
+            return new HashSet<int>(_selected);
+        }
+        
+        public void SetSelection(HashSet<int> entityIds) {
+            _selected.Clear();
+            foreach (var id in entityIds) {
+                _selected.Add(id);
+            }
+        }
+        
+        public void ClearSelection() {
+            _selected.Clear();
+        }
+        
+        public void AddToSelection(int entityId) {
+            _selected.Add(entityId);
+        }
+        
+        public void RemoveFromSelection(int entityId) {
+            _selected.Remove(entityId);
+        }
 
 #if UNITY_EDITOR
         void OnDrawGizmos() {
