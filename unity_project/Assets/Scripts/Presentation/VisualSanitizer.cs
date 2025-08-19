@@ -10,7 +10,8 @@ namespace FrontierAges.Presentation {
                 // Enforce solid background and remove skybox references that may rely on missing shaders
                 var cam = Camera.main;
                 if (cam != null) { cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = new Color(0.16f,0.17f,0.20f,1f); }
-                try { RenderSettings.skybox = null; } catch {}
+                // Don't clear skybox during initialization - causes crashes
+                // try { RenderSettings.skybox = null; } catch {}
 
                 DisableInvalidRenderers("initial pass");
 

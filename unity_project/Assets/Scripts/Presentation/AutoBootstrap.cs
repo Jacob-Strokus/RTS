@@ -77,7 +77,8 @@ namespace FrontierAges.Presentation {
 
             // Final visual sanitization: disable any renderer that uses the error shader or null shader, and clear skybox
             try {
-                try { RenderSettings.skybox = null; } catch {}
+                // Don't clear skybox during initialization - causes crashes
+                // try { RenderSettings.skybox = null; } catch {}
                 var renderers = Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None);
                 int disabled = 0;
                 foreach (var r in renderers) {
