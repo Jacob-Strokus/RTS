@@ -83,11 +83,39 @@ try {
 
     $latestDir = Join-Path $repoRoot "bin\windows-x64-latest"
     $exePath = Join-Path $latestDir "FrontierAges.exe"
+    # If the EXE exists but Data folder is missing, re-copy from most recent build folder
+    $dataDir = Join-Path $latestDir "FrontierAges_Data"
+    if (-not (Test-Path $exePath) -or -not (Test-Path $dataDir)) {
+        Write-Host "[Build] Repairing bin mirror from latest build output..." -ForegroundColor Yellow
+        $builds = Get-ChildItem -Path $buildDir -Directory | Where-Object { $_.Name -like 'windows-x64-*' } | Sort-Object Name -Descending
+        if ($builds -and (Test-Path $builds[0].FullName)) {
+            if (Test-Path $latestDir) { Remove-Item -Recurse -Force $latestDir }
+            New-Item -ItemType Directory -Path $latestDir | Out-Null
+            Copy-Item -Path (Join-Path $builds[0].FullName '*') -Destination $latestDir -Recurse -Force
+        }
+    }
     if (-not (Test-Path $exePath)) {
         Write-Host "[Build] Could not find built exe at $exePath" -ForegroundColor Red
         Write-Host "[Build] Inspect build log: $logPath" -ForegroundColor Red
         exit 1
     }
+
+    # Ensure StreamingAssets/data exists in the built player (runtime loader relies on it)
+    try {
+        $playerDataDir = Join-Path $latestDir 'FrontierAges_Data'
+        $saRoot = Join-Path $playerDataDir 'StreamingAssets'
+        $saData = Join-Path $saRoot 'data'
+        $repoData = Join-Path $repoRoot 'data'
+        if (-not (Test-Path $saData) -or (-not (Get-ChildItem -Path $saData -Filter '*.json' -ErrorAction SilentlyContinue))) {
+            if (-not (Test-Path $saData)) { New-Item -ItemType Directory -Path $saData -Force | Out-Null }
+            if (Test-Path $repoData) {
+                Copy-Item -Path (Join-Path $repoData '*') -Destination $saData -Recurse -Force
+                Write-Host "[Build] Copied StreamingAssets data into player: $saData" -ForegroundColor Cyan
+            } else {
+                Write-Host "[Build] Repo data folder missing: $repoData" -ForegroundColor Yellow
+            }
+        }
+    } catch { Write-Host "[Build] Warning ensuring StreamingAssets: $_" -ForegroundColor Yellow }
 
     Write-Host "[Build] Success → $exePath" -ForegroundColor Green
     if (-not $NoRun) {
