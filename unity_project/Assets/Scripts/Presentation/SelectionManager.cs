@@ -37,6 +37,18 @@ namespace FrontierAges.Presentation {
             }
             if (Input.GetKeyDown(KeyCode.Escape)) _selected.Clear();
             if (Input.GetKeyDown(KeyCode.P)) ShowPaths = !ShowPaths;
+
+            // Delete key: destroy selected buildings
+            if (Input.GetKeyDown(KeyCode.Delete)) {
+                var toRemove = new List<int>();
+                foreach (var id in _selected) {
+                    // if it's a building, remove it
+                    int bIdx = -1; for (int i=0;i<_sim.State.BuildingCount;i++) if (_sim.State.Buildings[i].Id==id) { bIdx=i; break; }
+                    if (bIdx>=0) toRemove.Add(id);
+                }
+                foreach (var bid in toRemove) _sim.DestroyBuilding(bid);
+                if (toRemove.Count>0) _selected.ExceptWith(toRemove);
+            }
         }
 
         private void TryClickSelect(Vector2 screenPos, bool clear) {

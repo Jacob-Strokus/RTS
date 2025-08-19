@@ -1,7 +1,12 @@
 param(
     [string]$UnityPath,
     [string]$ProjectPath = "$PSScriptRoot\..\unity_project",
-    [switch]$NoRun
+    [switch]$NoRun,
+    [switch]$BasicTest,
+    [switch]$PlacementTest,
+    [switch]$CleanRTS,
+    [switch]$MinimalTest,
+    [switch]$VanillaTest
 )
 
 function Resolve-UnityEditorPath {
@@ -59,13 +64,13 @@ function Resolve-UnityEditorPath {
 }
 
 function Invoke-UnityBuild {
-    param([string]$UnityExe, [string]$ProjPath, [string]$LogPath)
+    param([string]$UnityExe, [string]$ProjPath, [string]$LogPath, [string]$ExecuteMethod)
     Write-Host "[Build] Using Unity: $UnityExe" -ForegroundColor Cyan
     Write-Host "[Build] Project: $ProjPath" -ForegroundColor Cyan
     & $UnityExe `
         -batchmode -nographics -quit `
         -projectPath $ProjPath `
-        -executeMethod FrontierAges.EditorTools.Build.StandaloneBuilder.BuildWindows64 `
+        -executeMethod $ExecuteMethod `
         -logFile $LogPath
     return $LASTEXITCODE
 }
@@ -78,20 +83,25 @@ try {
     if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir | Out-Null }
     $logPath = Join-Path $buildDir "cli-build.log"
 
-    $code = Invoke-UnityBuild -UnityExe $unityExe -ProjPath $projFull -LogPath $logPath
+    $executeMethod = if ($VanillaTest) { 'FrontierAges.EditorTools.Build.BasicTestSceneTools.BuildVanillaUnityTestWindows64' } elseif ($MinimalTest) { 'FrontierAges.EditorTools.Build.BasicTestSceneTools.BuildMinimalUnityTestWindows64' } elseif ($CleanRTS) { 'FrontierAges.EditorTools.Build.BasicTestSceneTools.BuildCleanRTSWindows64' } elseif ($PlacementTest) { 'FrontierAges.EditorTools.Build.BasicTestSceneTools.BuildPlacementTestWindows64' } elseif ($BasicTest) { 'FrontierAges.EditorTools.Build.BasicTestSceneTools.BuildBasicTestWindows64' } else { 'FrontierAges.EditorTools.Build.StandaloneBuilder.BuildWindows64' }
+    $code = Invoke-UnityBuild -UnityExe $unityExe -ProjPath $projFull -LogPath $logPath -ExecuteMethod $executeMethod
     Write-Host "[Build] Unity exited with code $code" -ForegroundColor Yellow
 
     $latestDir = Join-Path $repoRoot "bin\windows-x64-latest"
     $exePath = Join-Path $latestDir "FrontierAges.exe"
-    # If the EXE exists but Data folder is missing, re-copy from most recent build folder
-    $dataDir = Join-Path $latestDir "FrontierAges_Data"
-    if (-not (Test-Path $exePath) -or -not (Test-Path $dataDir)) {
-        Write-Host "[Build] Repairing bin mirror from latest build output..." -ForegroundColor Yellow
+    # Only repair bin mirror if it's missing critical files
+    $gGM = Join-Path $latestDir 'FrontierAges_Data\globalgamemanagers'
+    $lvl0 = Join-Path $latestDir 'FrontierAges_Data\level0'
+    if (-not (Test-Path $exePath) -or -not (Test-Path $gGM) -or -not (Test-Path $lvl0)) {
+        Write-Host "[Build] Bin appears incomplete. Repairing from newest build..." -ForegroundColor Yellow
         $builds = Get-ChildItem -Path $buildDir -Directory | Where-Object { $_.Name -like 'windows-x64-*' } | Sort-Object Name -Descending
         if ($builds -and (Test-Path $builds[0].FullName)) {
+            $sourceBuild = $builds[0].FullName
             if (Test-Path $latestDir) { Remove-Item -Recurse -Force $latestDir }
             New-Item -ItemType Directory -Path $latestDir | Out-Null
-            Copy-Item -Path (Join-Path $builds[0].FullName '*') -Destination $latestDir -Recurse -Force
+            Copy-Item -Path (Join-Path $sourceBuild '*') -Destination $latestDir -Recurse -Force
+        } else {
+            Write-Host "[Build] No build output found under $buildDir" -ForegroundColor Red
         }
     }
     if (-not (Test-Path $exePath)) {
@@ -100,9 +110,23 @@ try {
         exit 1
     }
 
+    # Validate player data completeness; if critical files are missing, re-mirror from the latest build output using robocopy
+    $playerDataDir = Join-Path $latestDir 'FrontierAges_Data'
+    $preload = Join-Path $playerDataDir 'PreloadData'
+    $ggm = Join-Path $playerDataDir 'globalgamemanagers'
+    if (-not (Test-Path $preload) -or -not (Test-Path $ggm)) {
+        Write-Host "[Build] Detected missing player data files (PreloadData/globalgamemanagers). Repairing bin mirror..." -ForegroundColor Yellow
+        $builds = Get-ChildItem -Path $buildDir -Directory | Where-Object { $_.Name -like 'windows-x64-*' } | Sort-Object Name -Descending
+        if ($builds) {
+            $src = $builds[0].FullName
+            if (-not (Test-Path $latestDir)) { New-Item -ItemType Directory -Path $latestDir | Out-Null }
+            # Use robocopy for a robust mirror copy (preserves all files and attributes)
+            $null = & robocopy "$src" "$latestDir" /MIR /NFL /NDL /NJH /NJS /NP
+        }
+    }
+
     # Ensure StreamingAssets/data exists in the built player (runtime loader relies on it)
     try {
-        $playerDataDir = Join-Path $latestDir 'FrontierAges_Data'
         $saRoot = Join-Path $playerDataDir 'StreamingAssets'
         $saData = Join-Path $saRoot 'data'
         $repoData = Join-Path $repoRoot 'data'
