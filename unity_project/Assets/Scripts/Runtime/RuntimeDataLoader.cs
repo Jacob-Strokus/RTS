@@ -11,10 +11,23 @@ namespace FrontierAges.Runtime {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void LoadDataIntoRegistry() {
             try {
-                string root = Application.streamingAssetsPath;
-                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) { Debug.Log("[RuntimeDataLoader] StreamingAssets not found; skipping data load."); return; }
-                string dataDir = Path.Combine(root, "data");
-                if (!Directory.Exists(dataDir)) { Debug.Log("[RuntimeDataLoader] data folder not found in StreamingAssets; skipping."); return; }
+                // Probe common locations for data files
+                string saRoot = Application.streamingAssetsPath;
+                string candidate1 = string.IsNullOrEmpty(saRoot) ? null : Path.Combine(saRoot, "data");
+                string candidate2 = Path.Combine(Application.dataPath, "StreamingAssets", "data"); // fallback if streamingAssetsPath is odd
+                string exeDir = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+                string repoRoot = Path.GetFullPath(Path.Combine(exeDir, ".."));
+                string candidate3 = Path.Combine(repoRoot, "data"); // repo-level data as last resort (dev convenience)
+
+                string dataDir = null;
+                foreach (var c in new[] { candidate1, candidate2, candidate3 }) {
+                    if (!string.IsNullOrEmpty(c) && Directory.Exists(c)) { dataDir = c; break; }
+                }
+                if (dataDir == null) {
+                    Debug.Log($"[RuntimeDataLoader] No data folder found. Tried: '{candidate1}', '{candidate2}', '{candidate3}'");
+                    return;
+                }
+                Debug.Log($"[RuntimeDataLoader] Using data folder: {dataDir}");
                 // Resources
                 TryReadJson(Path.Combine(dataDir, "resources.json"), out ResourceDefList rlist); if (rlist?.resources != null) DataRegistry.Resources = rlist.resources;
                 // Attacks
@@ -81,6 +94,11 @@ namespace FrontierAges.Runtime {
             } catch (System.Exception ex) {
                 Debug.LogWarning($"[RuntimeDataLoader] Exception registering unit types: {ex.Message}");
             }
+        }
+
+        // Allow other bootstrappers to trigger registration after they create SimBootstrap
+        public static void TryRegisterNow(){
+            try { RegisterUnitTypesIntoSimulator(); } catch {}
         }
 
         private static AttackJson FindAttack(string id){ foreach(var a in DataRegistry.Attacks) if(a.id==id) return a; return null; }

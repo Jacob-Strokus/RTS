@@ -76,7 +76,12 @@ namespace FrontierAges.Presentation {
             _lastPlacedBuildingIndexPersisted = _placeBuildingIndex;
 
             // Fog overlay instantiation
-            if (FogMaterial){ var fogGo = new GameObject("FogOverlay"); fogGo.transform.position = Vector3.zero; _fog = fogGo.AddComponent<FogOverlay>(); var mf = fogGo.AddComponent<MeshFilter>(); fogGo.AddComponent<MeshRenderer>().sharedMaterial = FogMaterial; _fog.Init(_sim,128,128); }
+            if (FogMaterial){ var fogGo = new GameObject("FogOverlay"); fogGo.transform.position = Vector3.zero; _fog = fogGo.AddComponent<FogOverlay>(); var mf = fogGo.AddComponent<MeshFilter>(); var mr = fogGo.AddComponent<MeshRenderer>(); mr.sharedMaterial = FogMaterial; // FogOverlay will self-sanitize if invalid
+                // If we have our bundled unlit shader, prefer it (semi-transparent black)
+                var sh = Shader.Find("FA/UnlitSolidColor");
+                if (sh!=null) { var m = new Material(sh); if (m.HasProperty("_Color")) m.color = new Color(0,0,0,0.35f); mr.sharedMaterial = m; }
+                _fog.Init(_sim,128,128);
+            }
 
             // Runtime fallbacks: ensure SelectionManager and Help overlay exist for minimal UX
             if (FindObjectOfType<SelectionManager>() == null) { var selGo = new GameObject("SelectionManager"); selGo.AddComponent<SelectionManager>(); }
@@ -88,7 +93,10 @@ namespace FrontierAges.Presentation {
             go.name = "Unit_DefaultPrefab";
             var rend = go.GetComponent<Renderer>();
             if (rend) {
-                try { var mat = rend.material; if (mat != null) mat.color = new Color(0.65f,0.85f,1f,1f); } catch {}
+                try {
+                    var safe = GetSafeMaterial(new Color(0.65f,0.85f,1f,1f), false);
+                    if (safe != null) rend.sharedMaterial = safe; else rend.enabled = false;
+                } catch { rend.enabled = false; }
             }
             var col = go.GetComponent<Collider>(); if (col) col.isTrigger = false;
             go.AddComponent<UnitView>();
@@ -100,7 +108,10 @@ namespace FrontierAges.Presentation {
             go.name = "Building_DefaultPrefab";
             var rend = go.GetComponent<Renderer>();
             if (rend) {
-                try { var mat = rend.material; if (mat != null) mat.color = new Color(0.8f,0.75f,0.6f,1f); } catch {}
+                try {
+                    var safe = GetSafeMaterial(new Color(0.8f,0.75f,0.6f,1f), false);
+                    if (safe != null) rend.sharedMaterial = safe; else rend.enabled = false;
+                } catch { rend.enabled = false; }
             }
             var existingCol = go.GetComponent<Collider>(); if (existingCol && !(existingCol is BoxCollider)) { Destroy(existingCol); }
             if (!go.TryGetComponent<BoxCollider>(out var _)) go.AddComponent<BoxCollider>();
@@ -116,18 +127,26 @@ namespace FrontierAges.Presentation {
             var rend = go.GetComponent<Renderer>();
             if (rend) {
                 try {
-                    var mat = rend.material; // instance a per-renderer material
-                    if (mat != null) {
-                        mat.color = new Color(0f,1f,0f,0.35f);
-                        // Try to enable transparency if supported by the current shader (best-effort, no hard dependency)
-                        if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 1f); // URP Lit transparent
-                        if (mat.HasProperty("_Mode")) mat.SetFloat("_Mode", 3f); // Built-in Standard transparent
-                        mat.EnableKeyword("_ALPHABLEND_ON");
-                        mat.renderQueue = 3000;
-                    }
-                } catch {}
+                    var safe = GetSafeMaterial(new Color(0f,1f,0f,0.35f), true);
+                    if (safe != null) rend.sharedMaterial = safe; else rend.enabled = false;
+                } catch { rend.enabled = false; }
             }
             return go;
+        }
+
+        private Material GetSafeMaterial(Color color, bool transparent){
+            // Use Unity's built-in default material to avoid missing shader pink. Clone it so we can set color.
+            Material baseMat = null;
+            try { baseMat = Resources.GetBuiltinResource<Material>("Default-Material.mat"); } catch {}
+            if (baseMat == null) return null;
+            var inst = new Material(baseMat);
+            if (inst.HasProperty("_Color")) inst.color = color;
+            if (transparent) {
+                // Best-effort transparency settings that don't depend on specific shader names
+                if (inst.HasProperty("_Surface")) inst.SetFloat("_Surface", 1f);
+                inst.renderQueue = 3000;
+            }
+            return inst;
         }
 
     public Simulator GetSimulator() => _sim;

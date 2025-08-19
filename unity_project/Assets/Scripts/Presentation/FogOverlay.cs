@@ -17,7 +17,28 @@ namespace FrontierAges.Presentation {
     public int MapHeight = 128;
     private Material _matInstance;
         private int _lastTick=-1;
-    void Awake(){ _mesh = new Mesh(); GetComponent<MeshFilter>().mesh = _mesh; _matInstance = new Material(GetComponent<MeshRenderer>().sharedMaterial); GetComponent<MeshRenderer>().material = _matInstance; BuildMesh(); }
+    void Awake(){
+            _mesh = new Mesh();
+            GetComponent<MeshFilter>().mesh = _mesh;
+            var renderer = GetComponent<MeshRenderer>();
+            var shared = renderer != null ? renderer.sharedMaterial : null;
+            // Prefer a safe built-in material; if none available or invalid, disable renderer to avoid pink
+            Material builtin = null;
+            try { builtin = Resources.GetBuiltinResource<Material>("Default-Material.mat"); } catch {}
+            bool sharedValid = shared != null && shared.shader != null && (string.IsNullOrEmpty(shared.shader.name) || !shared.shader.name.Contains("Hidden/InternalErrorShader"));
+            if (sharedValid) {
+                _matInstance = new Material(shared);
+                renderer.material = _matInstance;
+            } else if (builtin != null) {
+                _matInstance = new Material(builtin);
+                renderer.material = _matInstance;
+                // Slightly transparent black overlay look (if the shader honors color alpha)
+                if (_matInstance.HasProperty("_Color")) _matInstance.color = new Color(0,0,0,0.35f);
+            } else {
+                if (renderer != null) renderer.enabled = false;
+            }
+            BuildMesh();
+        }
     public void Init(Simulator sim, int mapW=128, int mapH=128){ Sim=sim; MapWidth=mapW; MapHeight=mapH; RebuildIfNeeded(); }
     public void RebuildIfNeeded(){ if (MapWidth!=_w || MapHeight!=_h) { _w=MapWidth; _h=MapHeight; BuildMesh(); } }
     void BuildMesh(){

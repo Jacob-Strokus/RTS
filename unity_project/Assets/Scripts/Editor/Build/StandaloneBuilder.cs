@@ -148,8 +148,8 @@ namespace FrontierAges.EditorTools.Build {
                 ground.transform.localScale = new Vector3(10f, 1f, 10f); // 100x100 units
                 var groundRenderer = ground.GetComponent<Renderer>();
                 if (groundRenderer != null) {
-                    groundRenderer.sharedMaterial = new Material(Shader.Find("Standard"));
-                    groundRenderer.sharedMaterial.color = new Color(0.22f, 0.24f, 0.26f, 1f);
+                    // Avoid editor assigning materials that may not exist in player
+                    groundRenderer.enabled = false; // collider remains for raycasts
                 }
 
                 // Adjust camera for a better top-down view
@@ -157,6 +157,8 @@ namespace FrontierAges.EditorTools.Build {
                 if (cam != null) {
                     cam.transform.position = new Vector3(20f, 30f, -20f);
                     cam.transform.rotation = Quaternion.Euler(60f, 45f, 0f);
+                    cam.clearFlags = CameraClearFlags.SolidColor;
+                    cam.backgroundColor = new Color(0.16f, 0.17f, 0.20f, 1f);
                 }
                 // Save scene
                 if (!EditorSceneManager.SaveScene(scene, scenePath)) {
