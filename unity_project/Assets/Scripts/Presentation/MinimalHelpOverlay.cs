@@ -35,23 +35,59 @@ namespace FrontierAges.Presentation {
             if (Event.current == null) return;
             EnsureStyles();
             float pad = 8f;
-            // Help (left)
-            string help =
-                "F1: Toggle Help\n"+
-                "RMB: Move selected\n"+
-                "LMB: Select / Drag to box\n"+
-                "B: Build mode, ,/. cycle type\n"+
-                "T: Train unit (first bldg)\n"+
-                "Y: Queue 3x train\n"+
-                "P: Set rally at mouse, O: Clear\n"+
-                "C/V: Cancel prod (head/tail)\n"+
-                "G: Gather (workers)\n"+
-                "H: Toggle auto-assign workers\n"+
-                "A: Attack target  |  Shift+A: Attack-move\n"+
-                "F5: Save snapshot  |  F9: Load snapshot\n"+
-                "R: Start research (test)";
+            
+            // Check if RTSInputManager is present for different help text
+            var rtsInputManager = FindObjectOfType<RTSInputManager>();
+            bool hasRTSInput = rtsInputManager != null;
+            
+            // Debug logging only once per second to avoid spam
+            if (Application.isPlaying && Time.frameCount % 60 == 0) {
+                Debug.Log($"[MinimalHelpOverlay] Frame {Time.frameCount}: RTSInputManager found: {hasRTSInput}");
+                if (rtsInputManager != null) {
+                    Debug.Log($"[MinimalHelpOverlay] RTSInputManager object name: {rtsInputManager.gameObject.name}");
+                }
+            }
+            
+            string help;
+            if (hasRTSInput) {
+                // Age of Empires 4 style controls
+                help = "=== AGE OF EMPIRES 4 CONTROLS ===\n" +
+                       "F1: Toggle Help\n\n" +
+                       "SELECTION:\n" +
+                       "LMB: Select  |  Double: Select all type\n" +
+                       "Drag: Box select  |  Ctrl+A: All units\n" +
+                       "ESC: Deselect  |  Del: Delete selected\n\n" +
+                       "CONTROL GROUPS:\n" +
+                       "0-9: Select group  |  Ctrl+0-9: Set group\n\n" +
+                       "BUILDING:\n" +
+                       "B: Build mode  |  Period/Comma: Cycle type\n" +
+                       "T: Train unit  |  Y: Multi-train\n" +
+                       "P: Rally point  |  O: Clear rally\n\n" +
+                       "CAMERA:\n" +
+                       "[/]: Rotate  |  Backspace: Reset\n" +
+                       "F5: Focus selection  |  Arrows: Pan\n\n" +
+                       "UNITS:\n" +
+                       "F1-F4: Select building types\n" +
+                       "H: Town centers  |  Period: Idle workers";
+            } else {
+                // Legacy controls
+                help = "F1: Toggle Help\n"+
+                       "RMB: Move selected\n"+
+                       "LMB: Select / Drag to box\n"+
+                       "B: Build mode, ,/. cycle type\n"+
+                       "T: Train unit (first bldg)\n"+
+                       "Y: Queue 3x train\n"+
+                       "P: Set rally at mouse, O: Clear\n"+
+                       "C/V: Cancel prod (head/tail)\n"+
+                       "G: Gather (workers)\n"+
+                       "H: Toggle auto-assign workers\n"+
+                       "A: Attack target  |  Shift+A: Attack-move\n"+
+                       "F5: Save snapshot  |  F9: Load snapshot\n"+
+                       "R: Start research (test)";
+            }
+            
             try {
-                GUI.Label(new Rect(pad, pad, 420, 280), help ?? string.Empty, _mono ?? GUIStyle.none);
+                GUI.Label(new Rect(pad, pad, 520, 380), help ?? string.Empty, _mono ?? GUIStyle.none);
             } catch { enabled = false; return; }
 
             // Stats (right)
